@@ -1,9 +1,7 @@
 name: Pull, Compress and Release Docker Image
-permissions:
-  contents: write  # 允许创建 Release 和上传文件
-  packages: write  # (可选) 如果需要操作包也加上
+
 on:
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
     inputs:
       image_name:
         description: 'Docker Image Name (e.g., quay.io/ascend/vllm-ascend)'
@@ -22,6 +20,11 @@ jobs:
   pull-and-release:
     runs-on: ubuntu-latest
     
+    # 👇 关键：添加权限以允许创建 Release
+    permissions:
+      contents: write
+      packages: read
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -29,38 +32,52 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 👇 步骤 1: 拉取镜像
       - name: Pull Docker Image
         run: |
           echo "Pulling ${{ inputs.image_name }}:${{ inputs.image_tag }} for ${{ inputs.platform }}..."
           docker pull --platform ${{ inputs.platform }} ${{ inputs.image_name }}:${{ inputs.image_tag }}
           
+      # 👇 步骤 2: 【核心修改】清理空间 + 保存 + 压缩
       - name: Save and Compress Image
-        id: package_step  # 添加 ID 以便后续步骤引用文件名
+        id: package_step
         run: |
-          # 1. 生成基础文件名 (将 / 和 : 替换为 _)
+          # --- A. 释放空间 (核弹级清理) ---
+          echo "🧹 Cleaning up system to free up space..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          docker builder prune -af
+          docker image prune -af
+          echo "✅ Cleanup done. Current space:"
+          df -h .
+
+          # --- B. 生成文件名 ---
           BASE_NAME=$(echo "${{ inputs.image_name }}:${{ inputs.image_tag }}" | sed 's/[\/:]/_/g')
           TAR_FILE="${BASE_NAME}.tar"
           GZ_FILE="${BASE_NAME}.tar.gz"
           
-          # 2. 保存镜像为 tar
+          # --- C. 保存镜像 ---
           echo "Saving image to $TAR_FILE ..."
           docker save -o "$TAR_FILE" "${{ inputs.image_name }}:${{ inputs.image_tag }}"
           
-          # 3. 压缩为 tar.gz (保留原 tar 以防万一，如果空间紧张可去掉 -k)
-          echo "Compressing to $GZ_FILE ... (This may take a few minutes)"
-          gzip -k "$TAR_FILE"
-          
-          # 4. 显示大小对比
-          echo "✅ 原始大小:"
+          echo "📊 Size after save:"
           ls -lh "$TAR_FILE"
-          echo "✅ 压缩后大小:"
+          
+          # --- D. 压缩并删除原文件 (去掉 -k 以节省空间) ---
+          echo "Compressing to $GZ_FILE ... (Removing original tar to save space)"
+          gzip "$TAR_FILE" 
+          # 注意：这里去掉了 -k，gzip 完成后 .tar 会自动消失，只留下 .tar.gz
+          
+          echo "✅ Final compressed size:"
           ls -lh "$GZ_FILE"
           
-          # 5. 输出变量供 Release 步骤使用
+          # --- E. 输出变量 ---
           echo "final_file=$GZ_FILE" >> $GITHUB_OUTPUT
           echo "base_name=$BASE_NAME" >> $GITHUB_OUTPUT
 
-      # 删除了原来的 Upload Artifact 步骤，改为直接上传 Release
+      # 👇 步骤 3: 上传到 Release
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v1
         if: success()
@@ -76,7 +93,7 @@ jobs:
             ```bash
             wget https://github.com/ $ {{ github.repository }}/releases/download/backup- $ {{ github.run_number }}/ $ {{ steps.package_step.outputs.final_file }}
             
-            # 加载镜像
+            # 加载镜像 (gzip 文件可以直接被 docker load 识别，无需先解压！)
             docker load -i  $ {{ steps.package_step.outputs.final_file }}
             ```
           draft: false
@@ -93,6 +110,6 @@ jobs:
           echo ""
           echo "wget https://github.com/${{ github.repository }}/releases/download/backup-${{ github.run_number }}/${{ steps.package_step.outputs.final_file }}"
           echo ""
-          echo "👇 然后加载镜像："
+          echo "👇 然后加载镜像 (支持直接加载 .gz):"
           echo "docker load -i ${{ steps.package_step.outputs.final_file }}"
           echo "=========================================="
