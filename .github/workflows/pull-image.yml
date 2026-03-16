@@ -1,4 +1,4 @@
-name: Pull and Save Docker Image
+name: Pull, Compress and Release Docker Image
 
 on:
   workflow_dispatch: # 允许手动触发
@@ -17,8 +17,8 @@ on:
         default: 'linux/arm64'
 
 jobs:
-  pull-and-save:
-    runs-on: ubuntu-latest # 使用 Ubuntu 最新版的 Runner
+  pull-and-release:
+    runs-on: ubuntu-latest
     
     steps:
       - name: Checkout Code
@@ -32,25 +32,65 @@ jobs:
           echo "Pulling ${{ inputs.image_name }}:${{ inputs.image_tag }} for ${{ inputs.platform }}..."
           docker pull --platform ${{ inputs.platform }} ${{ inputs.image_name }}:${{ inputs.image_tag }}
           
-      - name: Save Docker Image to Tar
+      - name: Save and Compress Image
+        id: package_step  # 添加 ID 以便后续步骤引用文件名
         run: |
-          # 文件名格式化，避免特殊字符
-          FILE_NAME=$(echo "${{ inputs.image_name }}:${{ inputs.image_tag }}" | sed 's/[\/:]/_/g').tar
-          echo "Saving image to $FILE_NAME ..."
-          docker save -o $FILE_NAME ${{ inputs.image_name }}:${{ inputs.image_tag }}
+          # 1. 生成基础文件名 (将 / 和 : 替换为 _)
+          BASE_NAME=$(echo "${{ inputs.image_name }}:${{ inputs.image_tag }}" | sed 's/[\/:]/_/g')
+          TAR_FILE="${BASE_NAME}.tar"
+          GZ_FILE="${BASE_NAME}.tar.gz"
           
-          # 设置输出变量供下一步使用
-          echo "ARTIFACT_NAME=$FILE_NAME" >> $GITHUB_ENV
+          # 2. 保存镜像为 tar
+          echo "Saving image to $TAR_FILE ..."
+          docker save -o "$TAR_FILE" "${{ inputs.image_name }}:${{ inputs.image_tag }}"
+          
+          # 3. 压缩为 tar.gz (保留原 tar 以防万一，如果空间紧张可去掉 -k)
+          echo "Compressing to $GZ_FILE ... (This may take a few minutes)"
+          gzip -k "$TAR_FILE"
+          
+          # 4. 显示大小对比
+          echo "✅ 原始大小:"
+          ls -lh "$TAR_FILE"
+          echo "✅ 压缩后大小:"
+          ls -lh "$GZ_FILE"
+          
+          # 5. 输出变量供 Release 步骤使用
+          echo "final_file=$GZ_FILE" >> $GITHUB_OUTPUT
+          echo "base_name=$BASE_NAME" >> $GITHUB_OUTPUT
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      # 删除了原来的 Upload Artifact 步骤，改为直接上传 Release
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        if: success()
         with:
-          name: docker-image-tar
-          path: ${{ env.ARTIFACT_NAME }}
-          retention-days: 1 # 只保留1天，节省空间
-          compression-level: 0 # 不压缩，加快上传速度 (tar本身已包含数据)
+          files: ${{ steps.package_step.outputs.final_file }}
+          tag_name: backup-${{ github.run_number }}
+          name: "Docker Backup: ${{ inputs.image_name }}:${{ inputs.image_tag }}"
+          body: |
+            ### 📥 服务器下载指令
+            
+            复制以下命令在你的服务器上运行：
+            
+            ```bash
+            wget https://github.com/ $ {{ github.repository }}/releases/download/backup- $ {{ github.run_number }}/ $ {{ steps.package_step.outputs.final_file }}
+            
+            # 加载镜像
+            docker load -i  $ {{ steps.package_step.outputs.final_file }}
+            ```
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Completion Message
+      - name: Show Download Command
         run: |
-          echo "✅ 成功！请在上方 'Summary' 或 'Artifacts' 区域下载文件。"
-          echo "文件名: ${{ env.ARTIFACT_NAME }}"
+          echo "=========================================="
+          echo "✅ 任务成功完成！"
+          echo "📦 文件名: ${{ steps.package_step.outputs.final_file }}"
+          echo "=========================================="
+          echo "👇 请在你的服务器上运行以下命令下载："
+          echo ""
+          echo "wget https://github.com/${{ github.repository }}/releases/download/backup-${{ github.run_number }}/${{ steps.package_step.outputs.final_file }}"
+          echo ""
+          echo "👇 然后加载镜像："
+          echo "docker load -i ${{ steps.package_step.outputs.final_file }}"
+          echo "=========================================="
