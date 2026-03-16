@@ -15,15 +15,11 @@ on:
         description: 'Platform (e.g., linux/arm64, linux/amd64)'
         required: true
         default: 'linux/arm64'
-      max_part_size_mb:
-        description: 'Max size per part (MB, GitHub limit 2000, recommend 1900)'
-        required: false
-        default: '1900'
 
 jobs:
   pull-and-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # 超大镜像处理耗时久，延长超时时间
+    
     permissions:
       contents: write
       actions: write
@@ -35,232 +31,170 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 新增：安装多线程压缩工具 pigz 和 jq
-      - name: Install Dependencies
-        run: |
-          sudo apt update && sudo apt install -y pigz jq coreutils
-          pigz --version
-
-      # 优化：更彻底的空间清理（针对 15GB+ 镜像）
-      - name: Deep Cleanup System
-        run: |
-          echo "🧹 Deep cleaning to free up space (target: >50GB)..."
-          # 基础清理
-          sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
-          sudo rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-          # Docker 深度清理
-          docker system prune -a -f --volumes
-          docker builder prune -af
-          # 释放 swap 空间
-          sudo swapoff -a && sudo swapon -a
-          # 检查剩余空间
-          echo "✅ Cleanup done. Current disk usage:"
-          df -h /
-          # 确保至少有 50GB 可用空间
-          AVAIL_SPACE_GB=$(df -B 1G / | awk 'NR==2 {print $4}')
-          if [ $AVAIL_SPACE_GB -lt 50 ]; then
-            echo "❌ Insufficient space: only $AVAIL_SPACE_GB GB available (need 50GB+)"
-            exit 1
-          fi
-
-      # 步骤 1: 拉取镜像（增加超时和重试）
+      # 步骤 1: 拉取镜像
       - name: Pull Docker Image
         run: |
           FULL_IMAGE_NAME="${{ inputs.image_name }}:${{ inputs.image_tag }}"
           echo "Pulling $FULL_IMAGE_NAME for ${{ inputs.platform }}..."
-          # 增加重试和超时（超大镜像拉取易断）
-          for i in {1..3}; do
-            if docker pull --platform ${{ inputs.platform }} "$FULL_IMAGE_NAME"; then
-              break
-            elif [ $i -eq 3 ]; then
-              echo "❌ Failed to pull image after 3 retries"
-              exit 1
-            fi
-            sleep 10
-          done
+          docker pull --platform ${{ inputs.platform }} "$FULL_IMAGE_NAME"
           echo "full_image_name=$FULL_IMAGE_NAME" >> $GITHUB_ENV
 
-      # 步骤 2: 保存并压缩（核心优化）
+      # 步骤 2: 清理空间
+      - name: Cleanup System
+        run: |
+          echo "🧹 Cleaning up system to free up space..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          docker builder prune -af
+          echo "✅ Cleanup done. Current space:"
+          df -h .
+
+      # 步骤 3: 保存并压缩
       - name: Save and Compress Image
         id: package_step
         run: |
           FULL_IMAGE_NAME="${{ env.full_image_name }}"
-          MAX_PART_SIZE_MB=${{ inputs.max_part_size_mb }}
           
           # 创建存储目录
           mkdir -p docker-image
           
-          # 简化文件名（避免过长）
-          IMAGE_SHORT_NAME=$(echo "$FULL_IMAGE_NAME" | sed -E 's/^.*\/([^:]+):(.+)$/\1_\2/' | sed 's/[^a-zA-Z0-9_.-]/_/g')
-          TAR_FILE="docker-image/${IMAGE_SHORT_NAME}.tar"
-          GZ_FILE="docker-image/${IMAGE_SHORT_NAME}.tar.gz"
+          # 生成安全的文件名
+          SAFE_NAME=$(echo "$FULL_IMAGE_NAME" | sed 's/[\/:]/_/g')
+          TAR_FILE="${SAFE_NAME}.tar"
+          GZ_FILE="docker-image/${SAFE_NAME}.tar.gz"
           
-          # 保存镜像（增加进度提示）
-          echo "📤 Saving image to $TAR_FILE ..."
+          # 保存镜像
+          echo "Saving image to $TAR_FILE ..."
           docker save -o "$TAR_FILE" "$FULL_IMAGE_NAME"
           
-          # 获取原始大小（精准计算）
-          ORIGINAL_SIZE_B=$(du -b "$TAR_FILE" | cut -f1)
-          ORIGINAL_SIZE_GB=$(echo "scale=2; $ORIGINAL_SIZE_B / 1024 / 1024 / 1024" | bc)
-          ORIGINAL_SIZE_HUMAN=$(du -h "$TAR_FILE" | cut -f1)
-          echo "🗂️ Original size: $ORIGINAL_SIZE_HUMAN ($ORIGINAL_SIZE_GB GB)"
+          # 获取原始大小
+          ORIGINAL_SIZE=$(du -h "$TAR_FILE" | cut -f1)
+          echo "Original size: $ORIGINAL_SIZE"
           
-          # 多线程压缩（pigz 替代 gzip，速度提升 5-10 倍）
-          echo "⚡ Compressing with pigz (multi-thread)..."
-          pigz -9 -p $(nproc) -c "$TAR_FILE" > "$GZ_FILE"
+          # 压缩
+          echo "Compressing to $GZ_FILE ..."
+          gzip -c "$TAR_FILE" > "$GZ_FILE"
           
-          # 删除原始 tar 文件释放空间
-          rm -f "$TAR_FILE"
-          
-          # 获取压缩后大小（精准计算）
-          COMPRESSED_SIZE_B=$(du -b "$GZ_FILE" | cut -f1)
-          COMPRESSED_SIZE_MB=$((COMPRESSED_SIZE_B / 1024 / 1024))
+          # 获取压缩后大小
+          COMPRESSED_SIZE=$(du -b "$GZ_FILE" | cut -f1)
+          COMPRESSED_SIZE_MB=$((COMPRESSED_SIZE / 1024 / 1024))
           COMPRESSED_SIZE_GB=$(echo "scale=2; $COMPRESSED_SIZE_MB / 1024" | bc)
           COMPRESSED_SIZE_HUMAN=$(du -h "$GZ_FILE" | cut -f1)
           
-          echo "🗜️ Compressed size: $COMPRESSED_SIZE_HUMAN ($COMPRESSED_SIZE_GB GB)"
+          echo "Compressed size: $COMPRESSED_SIZE_HUMAN (${COMPRESSED_SIZE_MB}MB / ${COMPRESSED_SIZE_GB}GB)"
           
-          # 生成 SHA256 校验和（关键：验证文件完整性）
-          SHA256_SUM=$(sha256sum "$GZ_FILE" | awk '{print $1}')
-          echo "$SHA256_SUM  $GZ_FILE" > docker-image/${IMAGE_SHORT_NAME}.sha256
-          echo "🔍 SHA256 checksum: $SHA256_SUM"
+          # 删除原始 tar 文件
+          rm -f "$TAR_FILE"
+          
+          # 输出大小信息
+          echo "compressed_size_mb=$COMPRESSED_SIZE_MB" >> $GITHUB_OUTPUT
+          echo "compressed_size_human=$COMPRESSED_SIZE_HUMAN" >> $GITHUB_OUTPUT
+          echo "compressed_size_gb=$COMPRESSED_SIZE_GB" >> $GITHUB_OUTPUT
+          echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
+          echo "gz_file=$GZ_FILE" >> $GITHUB_OUTPUT
+          
+          # GitHub 限制是 2GB，留点余量用 1900MB
+          MAX_SIZE_MB=1900
           
           # 判断是否需要分卷
-          if [ $COMPRESSED_SIZE_MB -gt $MAX_PART_SIZE_MB ]; then
-            echo "📚 File too large, splitting into parts (${MAX_PART_SIZE_MB}MB each)..."
+          if [ $COMPRESSED_SIZE_MB -gt $MAX_SIZE_MB ]; then
+            echo "文件过大 (${COMPRESSED_SIZE_MB}MB > ${MAX_SIZE_MB}MB)，需要分卷..."
             
-            # 分卷（使用数字后缀，更易拼接）
-            split -b ${MAX_PART_SIZE_MB}M -d -a 4 "$GZ_FILE" "docker-image/${IMAGE_SHORT_NAME}.tar.gz.part-"
+            # 计算需要的分卷数量
+            PART_COUNT=$(( ($COMPRESSED_SIZE_MB + $MAX_SIZE_MB - 1) / $MAX_SIZE_MB ))
+            echo "将分割成 $PART_COUNT 个文件，每个约 ${MAX_SIZE_MB}MB"
+            
+            # 分卷成 1900MB 的多个文件
+            split -b ${MAX_SIZE_MB}M -d -a 3 "$GZ_FILE" "docker-image/${SAFE_NAME}.tar.gz.part."
             
             # 删除原始 gz 文件
             rm -f "$GZ_FILE"
             
-            # 收集分卷文件列表
-            PART_FILES=$(ls docker-image/${IMAGE_SHORT_NAME}.tar.gz.part-* | sort | xargs)
-            PART_COUNT=$(echo "$PART_FILES" | wc -w)
-            
-            # 生成分卷后的校验和
-            for part in $PART_FILES; do
-              sha256sum "$part" >> docker-image/${IMAGE_SHORT_NAME}.sha256
+            # 列出分卷文件
+            PART_FILES=""
+            for file in $(ls docker-image/${SAFE_NAME}.tar.gz.part.* | sort); do
+              PART_FILES="$PART_FILES $file"
             done
             
-            echo "✅ Split into $PART_COUNT parts"
-            echo "split_files=$PART_FILES" >> $GITHUB_OUTPUT
+            # 记录分卷信息
+            echo "split_files=$(echo $PART_FILES | xargs)" >> $GITHUB_OUTPUT
             echo "need_split=true" >> $GITHUB_OUTPUT
             echo "part_count=$PART_COUNT" >> $GITHUB_OUTPUT
           else
-            echo "✅ File size within limit, no split needed"
+            echo "文件大小在限制内 (${COMPRESSED_SIZE_MB}MB <= ${MAX_SIZE_MB}MB)，直接使用"
             echo "need_split=false" >> $GITHUB_OUTPUT
           fi
           
-          # 输出关键变量
-          echo "compressed_size_mb=$COMPRESSED_SIZE_MB" >> $GITHUB_OUTPUT
-          echo "compressed_size_human=$COMPRESSED_SIZE_HUMAN" >> $GITHUB_OUTPUT
-          echo "compressed_size_gb=$COMPRESSED_SIZE_GB" >> $GITHUB_OUTPUT
-          echo "image_short_name=$IMAGE_SHORT_NAME" >> $GITHUB_OUTPUT
-          echo "sha256_sum=$SHA256_SUM" >> $GITHUB_OUTPUT
-          echo "final_files=$(ls docker-image/* | xargs)" >> $GITHUB_OUTPUT
+          # 列出最终文件
+          echo "最终文件列表："
+          ls -lh docker-image/
 
-      # 步骤 3: 准备 Release Body（优化下载命令和校验）
+      # 步骤 4: 准备 Release Body
       - name: Prepare Release Body
         id: prepare_body
         run: |
-          IMAGE_SHORT_NAME=${{ steps.package_step.outputs.image_short_name }}
-          MAX_PART_SIZE_MB=${{ inputs.max_part_size_mb }}
-          
           if [ "${{ steps.package_step.outputs.need_split }}" == "true" ]; then
-            # 分卷情况的 Release Body（优化下载/合并/校验命令）
-            BODY="## Docker Image Backup
-
-### 镜像信息
-- **Name**: \`${{ inputs.image_name }}\`
-- **Tag**: \`${{ inputs.image_tag }}\`
-- **Platform**: \`${{ inputs.platform }}\`
-- **Original Size**: ${{ steps.package_step.outputs.original_size_human }}
-- **Compressed Size**: ${{ steps.package_step.outputs.compressed_size_human }}
-
-### ⚠️ 文件分卷说明
-文件大小超过 GitHub 2GB 限制，已分割为 ${{ steps.package_step.outputs.part_count }} 个分卷（每个 ≤ ${MAX_PART_SIZE_MB}MB）。
-
-### 📥 完整操作步骤
-\`\`\`bash
-# 1. 下载所有文件（包括分卷和校验和）
-RELEASE_TAG=docker-backup-${{ github.run_number }}
-REPO=${{ github.repository }}
-
-# 下载校验和文件
-wget https://github.com/\$REPO/releases/download/\$RELEASE_TAG/${IMAGE_SHORT_NAME}.sha256
-
-# 下载所有分卷
-for i in \$(seq -f \"%04g\" 0 $((${{ steps.package_step.outputs.part_count }}-1))); do
-  wget https://github.com/\$REPO/releases/download/\$RELEASE_TAG/${IMAGE_SHORT_NAME}.tar.gz.part-\$i;
-done
-
-# 2. 合并分卷
-cat ${IMAGE_SHORT_NAME}.tar.gz.part-* > ${IMAGE_SHORT_NAME}.tar.gz
-
-# 3. 验证文件完整性（关键！）
-sha256sum -c ${IMAGE_SHORT_NAME}.sha256 --ignore-missing
-
-# 4. 加载镜像到 Docker
-docker load -i ${IMAGE_SHORT_NAME}.tar.gz
-\`\`\`
-
-### 🔍 校验和
-\`\`\`
-${{ steps.package_step.outputs.sha256_sum }}  ${IMAGE_SHORT_NAME}.tar.gz
-\`\`\`"
+            # 分卷情况的 Release Body
+            echo "## Docker Image Backup" > release_body.md
+            echo "" >> release_body.md
+            echo "### 镜像信息" >> release_body.md
+            echo "- **Name**: \`${{ inputs.image_name }}\`" >> release_body.md
+            echo "- **Tag**: \`${{ inputs.image_tag }}\`" >> release_body.md
+            echo "- **Platform**: \`${{ inputs.platform }}\`" >> release_body.md
+            echo "- **Compressed Size**: ${{ steps.package_step.outputs.compressed_size_human }} (${{ steps.package_step.outputs.compressed_size_gb }}GB)" >> release_body.md
+            echo "" >> release_body.md
+            echo "### ⚠️ 文件分卷说明" >> release_body.md
+            echo "由于文件大小 (${{ steps.package_step.outputs.compressed_size_human }}) 超过 GitHub 的 2GB 限制，已分割成 ${{ steps.package_step.outputs.part_count }} 个分卷文件。" >> release_body.md
+            echo "" >> release_body.md
+            echo "### 📥 下载命令" >> release_body.md
+            echo '```bash' >> release_body.md
+            echo "# 下载所有分卷" >> release_body.md
+            echo "for i in \$(seq -f \"%03g\" 0 $((${{ steps.package_step.outputs.part_count }}-1))); do \\" >> release_body.md
+            echo "  wget https://github.com/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.package_step.outputs.safe_name }}.tar.gz.part.\$i; \\" >> release_body.md
+            echo "done" >> release_body.md
+            echo "" >> release_body.md
+            echo "# 合并文件" >> release_body.md
+            echo "cat ${{ steps.package_step.outputs.safe_name }}.tar.gz.part.* > ${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
+            echo "" >> release_body.md
+            echo "# 加载镜像" >> release_body.md
+            echo "docker load -i ${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
+            echo '```' >> release_body.md
           else
             # 单文件情况的 Release Body
-            BODY="## Docker Image Backup
-
-### 镜像信息
-- **Name**: \`${{ inputs.image_name }}\`
-- **Tag**: \`${{ inputs.image_tag }}\`
-- **Platform**: \`${{ inputs.platform }}\`
-- **Original Size**: ${{ steps.package_step.outputs.original_size_human }}
-- **Compressed Size**: ${{ steps.package_step.outputs.compressed_size_human }}
-
-### 📥 下载并加载镜像
-\`\`\`bash
-# 1. 下载文件和校验和
-RELEASE_TAG=docker-backup-${{ github.run_number }}
-REPO=${{ github.repository }}
-wget https://github.com/\$REPO/releases/download/\$RELEASE_TAG/${IMAGE_SHORT_NAME}.tar.gz
-wget https://github.com/\$REPO/releases/download/\$RELEASE_TAG/${IMAGE_SHORT_NAME}.sha256
-
-# 2. 验证完整性
-sha256sum -c ${IMAGE_SHORT_NAME}.sha256
-
-# 3. 加载镜像
-docker load -i ${IMAGE_SHORT_NAME}.tar.gz
-\`\`\`
-
-### 🔍 SHA256 校验和
-\`\`\`
-${{ steps.package_step.outputs.sha256_sum }}  ${IMAGE_SHORT_NAME}.tar.gz
-\`\`\`"
+            echo "## Docker Image Backup" > release_body.md
+            echo "" >> release_body.md
+            echo "### 镜像信息" >> release_body.md
+            echo "- **Name**: \`${{ inputs.image_name }}\`" >> release_body.md
+            echo "- **Tag**: \`${{ inputs.image_tag }}\`" >> release_body.md
+            echo "- **Platform**: \`${{ inputs.platform }}\`" >> release_body.md
+            echo "- **Compressed Size**: ${{ steps.package_step.outputs.compressed_size_human }} (${{ steps.package_step.outputs.compressed_size_gb }}GB)" >> release_body.md
+            echo "" >> release_body.md
+            echo "### 📥 下载命令" >> release_body.md
+            echo '```bash' >> release_body.md
+            echo "wget https://github.com/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
+            echo "docker load -i ${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
+            echo '```' >> release_body.md
           fi
           
-          # 写入 Release Body 文件
-          echo "$BODY" > release_body.md
           echo "body_file=release_body.md" >> $GITHUB_OUTPUT
 
-      # 步骤 4: 上传到 GitHub Release
+      # 步骤 5: 尝试上传到 Release
       - name: Upload to GitHub Release
         id: upload_release
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.package_step.outputs.final_files }}
+          files: ${{ steps.package_step.outputs.need_split == 'true' && steps.package_step.outputs.split_files || steps.package_step.outputs.gz_file }}
           tag_name: docker-backup-${{ github.run_number }}
           name: "Docker Image: ${{ inputs.image_name }}:${{ inputs.image_tag }}"
-          body_path: ${{ steps.prepare_body.outputs.body_file }}
+          body_path: release_body.md
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 步骤 5: 检查上传状态
+      # 步骤 6: 检查上传是否成功
       - name: Check Upload Status
         id: check_upload
         run: |
@@ -268,30 +202,28 @@ ${{ steps.package_step.outputs.sha256_sum }}  ${IMAGE_SHORT_NAME}.tar.gz
             echo "✅ Release 上传成功！"
             echo "upload_success=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ Release 上传失败，将文件保存为 Artifact"
+            echo "⚠️ Release 上传失败，将保留文件作为 Artifact"
             echo "upload_success=false" >> $GITHUB_OUTPUT
           fi
 
-      # 步骤 6: 上传 Artifact（备份，优化命名）
+      # 步骤 7: 如果上传失败，将文件保存为 Artifact
       - name: Upload Artifacts (Backup)
         if: steps.check_upload.outputs.upload_success == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: docker-image-${{ steps.package_step.outputs.image_short_name }}
+          name: docker-image-${{ steps.package_step.outputs.safe_name }}
           path: docker-image/
           retention-days: 90
-          compression-level: 0  # 已压缩，无需再压缩
+          compression-level: 0
 
-      # 步骤 7: 显示最终信息（优化下载提示）
+      # 步骤 8: 显示最终结果和下载方式
       - name: Show Final Information
         run: |
           echo "=================================================="
           echo "✅ 任务完成！"
           echo "=================================================="
           echo "📦 镜像: ${{ inputs.image_name }}:${{ inputs.image_tag }}"
-          echo "🗂️ 原始大小: ${{ steps.package_step.outputs.original_size_human }}"
-          echo "🗜️ 压缩后大小: ${{ steps.package_step.outputs.compressed_size_human }}"
-          echo "🔍 SHA256: ${{ steps.package_step.outputs.sha256_sum }}"
+          echo "📊 压缩后大小: ${{ steps.package_step.outputs.compressed_size_human }}"
           echo "=================================================="
           
           if [ "${{ steps.check_upload.outputs.upload_success }}" == "true" ]; then
@@ -299,22 +231,18 @@ ${{ steps.package_step.outputs.sha256_sum }}  ${IMAGE_SHORT_NAME}.tar.gz
             echo ""
             echo "👇 访问 Release 页面："
             echo "https://github.com/${{ github.repository }}/releases/tag/docker-backup-${{ github.run_number }}"
-            echo ""
-            echo "💡 下载后务必验证 SHA256 校验和，确保文件完整！"
           else
             echo "⚠️ Release 上传失败，文件已保存为 Artifact"
             echo ""
             echo "👇 下载 Artifact 的方法："
             echo "----------------------------------------------"
-            echo "方法1：Web 界面"
-            echo "1. 进入 Actions → 本运行记录 → Artifacts → 下载 docker-image-${{ steps.package_step.outputs.image_short_name }}"
+            echo "方法1：通过 GitHub Web 界面"
+            echo "1. 进入 Actions 页面"
+            echo "2. 找到这个工作流运行记录"
+            echo "3. 在 \"Artifacts\" 部分下载 docker-image-${{ steps.package_step.outputs.safe_name }}"
             echo ""
-            echo "方法2：GitHub CLI（推荐）"
-            echo "gh auth login  # 先登录"
-            echo "gh run download ${{ github.run_id }} -n docker-image-${{ steps.package_step.outputs.image_short_name }}"
-            echo ""
-            echo "方法3：API 下载（需 PAT）"
-            echo "curl -H \"Authorization: token <YOUR_PAT>\" -L -O \$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts | jq -r '.artifacts[] | select(.name==\"docker-image-${{ steps.package_step.outputs.image_short_name }}\") | .archive_download_url')"
+            echo "方法2：使用 GitHub CLI"
+            echo "gh run download ${{ github.run_id }} -n docker-image-${{ steps.package_step.outputs.safe_name }}"
             echo "----------------------------------------------"
           fi
           echo "=================================================="
