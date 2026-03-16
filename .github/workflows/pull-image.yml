@@ -1,5 +1,7 @@
 name: Pull, Compress and Release Docker Image
-
+permissions:
+  contents: write  # 允许创建 Release 和上传文件
+  packages: write  # (可选) 如果需要操作包也加上
 on:
   workflow_dispatch: # 允许手动触发
     inputs:
