@@ -1,0 +1,56 @@
+name: Pull and Save Docker Image
+
+on:
+  workflow_dispatch: # 允许手动触发
+    inputs:
+      image_name:
+        description: 'Docker Image Name (e.g., quay.io/ascend/vllm-ascend)'
+        required: true
+        default: 'quay.io/ascend/vllm-ascend'
+      image_tag:
+        description: 'Image Tag (e.g., v0.17.0rc1-a3-openeuler)'
+        required: true
+        default: 'v0.17.0rc1-a3-openeuler'
+      platform:
+        description: 'Platform (e.g., linux/arm64, linux/amd64)'
+        required: true
+        default: 'linux/arm64'
+
+jobs:
+  pull-and-save:
+    runs-on: ubuntu-latest # 使用 Ubuntu 最新版的 Runner
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Pull Docker Image
+        run: |
+          echo "Pulling ${{ inputs.image_name }}:${{ inputs.image_tag }} for ${{ inputs.platform }}..."
+          docker pull --platform ${{ inputs.platform }} ${{ inputs.image_name }}:${{ inputs.image_tag }}
+          
+      - name: Save Docker Image to Tar
+        run: |
+          # 文件名格式化，避免特殊字符
+          FILE_NAME=$(echo "${{ inputs.image_name }}:${{ inputs.image_tag }}" | sed 's/[\/:]/_/g').tar
+          echo "Saving image to $FILE_NAME ..."
+          docker save -o $FILE_NAME ${{ inputs.image_name }}:${{ inputs.image_tag }}
+          
+          # 设置输出变量供下一步使用
+          echo "ARTIFACT_NAME=$FILE_NAME" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-tar
+          path: ${{ env.ARTIFACT_NAME }}
+          retention-days: 1 # 只保留1天，节省空间
+          compression-level: 0 # 不压缩，加快上传速度 (tar本身已包含数据)
+      
+      - name: Completion Message
+        run: |
+          echo "✅ 成功！请在上方 'Summary' 或 'Artifacts' 区域下载文件。"
+          echo "文件名: ${{ env.ARTIFACT_NAME }}"
