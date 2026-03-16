@@ -38,11 +38,32 @@ jobs:
           docker pull --platform ${{ inputs.platform }} "$FULL_IMAGE_NAME"
           echo "full_image_name=$FULL_IMAGE_NAME" >> $GITHUB_ENV
           
-      # 步骤 2: 清理空间 + 保存 + 压缩
-      - name: Save and Compress Image
-        id: package_step
+          # 立即保存镜像名到文件，防止后续步骤丢失
+          echo "$FULL_IMAGE_NAME" > image_name.txt
+          
+      # 步骤 2: 先保存镜像，再清理空间
+      - name: Save Image Before Cleanup
+        id: save_step
         run: |
-          # 释放空间
+          FULL_IMAGE_NAME="${{ env.full_image_name }}"
+          
+          # 生成文件名
+          SAFE_NAME=$(echo "$FULL_IMAGE_NAME" | sed 's/[\/:]/_/g')
+          TAR_FILE="${SAFE_NAME}.tar"
+          
+          echo "Saving image to $TAR_FILE before cleanup..."
+          docker save -o "$TAR_FILE" "$FULL_IMAGE_NAME"
+          
+          echo "✅ Image saved. Size:"
+          ls -lh "$TAR_FILE"
+          
+          # 保存文件路径供后续步骤使用
+          echo "tar_file=$TAR_FILE" >> $GITHUB_OUTPUT
+          echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
+
+      # 步骤 3: 清理空间（现在可以安全清理，因为镜像已经保存为文件）
+      - name: Cleanup System
+        run: |
           echo "🧹 Cleaning up system to free up space..."
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
@@ -53,35 +74,29 @@ jobs:
           echo "✅ Cleanup done. Current space:"
           df -h .
 
-          # 验证镜像是否存在
-          FULL_IMAGE_NAME="${{ env.full_image_name }}"
-          echo "Verifying image: $FULL_IMAGE_NAME"
-          docker image inspect "$FULL_IMAGE_NAME" > /dev/null 2>&1 || {
-            echo "❌ Error: Image $FULL_IMAGE_NAME not found locally!"
-            docker images
-            exit 1
-          }
-
-          # 生成文件名（替换特殊字符）
-          SAFE_NAME=$(echo "$FULL_IMAGE_NAME" | sed 's/[\/:]/_/g')
-          GZ_FILE="${SAFE_NAME}.tar.gz"
+      # 步骤 4: 压缩已保存的镜像文件
+      - name: Compress Image
+        id: compress_step
+        run: |
+          TAR_FILE="${{ steps.save_step.outputs.tar_file }}"
+          GZ_FILE="${TAR_FILE}.gz"
           
-          # 保存并直接压缩（使用管道，避免中间tar文件）
-          echo "Saving and compressing image to $GZ_FILE ..."
-          docker save "$FULL_IMAGE_NAME" | gzip > "$GZ_FILE"
+          echo "Compressing $TAR_FILE to $GZ_FILE ..."
+          gzip -c "$TAR_FILE" > "$GZ_FILE"
+          
+          # 删除原始 tar 文件以节省空间
+          rm -f "$TAR_FILE"
           
           echo "✅ Final compressed size:"
           ls -lh "$GZ_FILE"
           
-          # 输出变量
           echo "final_file=$GZ_FILE" >> $GITHUB_OUTPUT
-          echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
 
-      # 步骤 3: 上传到 Release
+      # 步骤 5: 上传到 Release
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.package_step.outputs.final_file }}
+          files: ${{ steps.compress_step.outputs.final_file }}
           tag_name: docker-backup-${{ github.run_number }}
           name: "Docker Image: ${{ inputs.image_name }}:${{ inputs.image_tag }}"
           body: |
@@ -91,15 +106,10 @@ jobs:
             - **Name**: `${{ inputs.image_name }}`
             - **Tag**: `${{ inputs.image_tag }}`
             - **Platform**: `${{ inputs.platform }}`
-            - **Compressed Size**: $(ls -lh ${{ steps.package_step.outputs.final_file }} | awk '{print $5}')
             
             ### 📥 下载链接
-            [Download ${{ steps.package_step.outputs.final_file }}](${{ github.server_url }}/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.package_step.outputs.final_file }})
+            [Download ${{ steps.compress_step.outputs.final_file }}](${{ github.server_url }}/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.compress_step.outputs.final_file }})
             
             ### 服务器下载命令
             ```bash
-            # 直接下载到服务器
-            wget https://github.com/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.package_step.outputs.final_file }}
-            
-            # 如果需要加载到 Docker（可选）
-            # docker load -i ${{ steps.package_step.outputs.final_file }}
+            wget https://github.com/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.compress_step.outputs.final_file }}
