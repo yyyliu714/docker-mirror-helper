@@ -112,19 +112,31 @@ jobs:
             # 删除原始 gz 文件
             rm -f "$GZ_FILE"
             
-            # 列出分卷文件
-            PART_FILES=""
-            for file in $(ls docker-image/${SAFE_NAME}.tar.gz.part.* | sort); do
-              PART_FILES="$PART_FILES $file"
-            done
+            # 列出分卷文件（带完整路径）
+            echo "分卷文件列表："
+            ls -lh docker-image/${SAFE_NAME}.tar.gz.part.*
             
-            # 记录分卷信息
-            echo "split_files=$(echo $PART_FILES | xargs)" >> $GITHUB_OUTPUT
+            # 记录分卷信息 - 使用完整路径
             echo "need_split=true" >> $GITHUB_OUTPUT
             echo "part_count=$PART_COUNT" >> $GITHUB_OUTPUT
+            
+            # 创建文件列表字符串，用逗号分隔（这是 action-gh-release 需要的格式）
+            FILE_LIST=""
+            for file in docker-image/${SAFE_NAME}.tar.gz.part.*; do
+              if [ -f "$file" ]; then
+                if [ -z "$FILE_LIST" ]; then
+                  FILE_LIST="$file"
+                else
+                  FILE_LIST="$FILE_LIST, $file"
+                fi
+              fi
+            done
+            echo "file_list=$FILE_LIST" >> $GITHUB_OUTPUT
+            echo "文件列表: $FILE_LIST"
           else
             echo "文件大小在限制内 (${COMPRESSED_SIZE_MB}MB <= ${MAX_SIZE_MB}MB)，直接使用"
             echo "need_split=false" >> $GITHUB_OUTPUT
+            echo "file_list=$GZ_FILE" >> $GITHUB_OUTPUT
           fi
           
           # 列出最终文件
@@ -137,112 +149,27 @@ jobs:
         run: |
           if [ "${{ steps.package_step.outputs.need_split }}" == "true" ]; then
             # 分卷情况的 Release Body
-            echo "## Docker Image Backup" > release_body.md
-            echo "" >> release_body.md
-            echo "### 镜像信息" >> release_body.md
-            echo "- **Name**: \`${{ inputs.image_name }}\`" >> release_body.md
-            echo "- **Tag**: \`${{ inputs.image_tag }}\`" >> release_body.md
-            echo "- **Platform**: \`${{ inputs.platform }}\`" >> release_body.md
-            echo "- **Compressed Size**: ${{ steps.package_step.outputs.compressed_size_human }} (${{ steps.package_step.outputs.compressed_size_gb }}GB)" >> release_body.md
-            echo "" >> release_body.md
-            echo "### ⚠️ 文件分卷说明" >> release_body.md
-            echo "由于文件大小 (${{ steps.package_step.outputs.compressed_size_human }}) 超过 GitHub 的 2GB 限制，已分割成 ${{ steps.package_step.outputs.part_count }} 个分卷文件。" >> release_body.md
-            echo "" >> release_body.md
-            echo "### 📥 下载命令" >> release_body.md
-            echo '```bash' >> release_body.md
-            echo "# 下载所有分卷" >> release_body.md
-            echo "for i in \$(seq -f \"%03g\" 0 $((${{ steps.package_step.outputs.part_count }}-1))); do \\" >> release_body.md
-            echo "  wget https://github.com/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.package_step.outputs.safe_name }}.tar.gz.part.\$i; \\" >> release_body.md
-            echo "done" >> release_body.md
-            echo "" >> release_body.md
-            echo "# 合并文件" >> release_body.md
-            echo "cat ${{ steps.package_step.outputs.safe_name }}.tar.gz.part.* > ${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
-            echo "" >> release_body.md
-            echo "# 加载镜像" >> release_body.md
-            echo "docker load -i ${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
-            echo '```' >> release_body.md
-          else
-            # 单文件情况的 Release Body
-            echo "## Docker Image Backup" > release_body.md
-            echo "" >> release_body.md
-            echo "### 镜像信息" >> release_body.md
-            echo "- **Name**: \`${{ inputs.image_name }}\`" >> release_body.md
-            echo "- **Tag**: \`${{ inputs.image_tag }}\`" >> release_body.md
-            echo "- **Platform**: \`${{ inputs.platform }}\`" >> release_body.md
-            echo "- **Compressed Size**: ${{ steps.package_step.outputs.compressed_size_human }} (${{ steps.package_step.outputs.compressed_size_gb }}GB)" >> release_body.md
-            echo "" >> release_body.md
-            echo "### 📥 下载命令" >> release_body.md
-            echo '```bash' >> release_body.md
-            echo "wget https://github.com/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
-            echo "docker load -i ${{ steps.package_step.outputs.safe_name }}.tar.gz" >> release_body.md
-            echo '```' >> release_body.md
-          fi
-          
-          echo "body_file=release_body.md" >> $GITHUB_OUTPUT
+            cat > release_body.md << 'EOF'
+## Docker Image Backup
 
-      # 步骤 5: 尝试上传到 Release
-      - name: Upload to GitHub Release
-        id: upload_release
-        continue-on-error: true
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.package_step.outputs.need_split == 'true' && steps.package_step.outputs.split_files || steps.package_step.outputs.gz_file }}
-          tag_name: docker-backup-${{ github.run_number }}
-          name: "Docker Image: ${{ inputs.image_name }}:${{ inputs.image_tag }}"
-          body_path: release_body.md
-          draft: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+### 镜像信息
+- **Name**: `${{ inputs.image_name }}`
+- **Tag**: `${{ inputs.image_tag }}`
+- **Platform**: `${{ inputs.platform }}`
+- **Compressed Size**: ${{ steps.package_step.outputs.compressed_size_human }} (${{ steps.package_step.outputs.compressed_size_gb }}GB)
 
-      # 步骤 6: 检查上传是否成功
-      - name: Check Upload Status
-        id: check_upload
-        run: |
-          if [ "${{ steps.upload_release.outcome }}" == "success" ]; then
-            echo "✅ Release 上传成功！"
-            echo "upload_success=true" >> $GITHUB_OUTPUT
-          else
-            echo "⚠️ Release 上传失败，将保留文件作为 Artifact"
-            echo "upload_success=false" >> $GITHUB_OUTPUT
-          fi
+### ⚠️ 文件分卷说明
+由于文件大小 (${{ steps.package_step.outputs.compressed_size_human }}) 超过 GitHub 的 2GB 限制，已分割成 ${{ steps.package_step.outputs.part_count }} 个分卷文件。
 
-      # 步骤 7: 如果上传失败，将文件保存为 Artifact
-      - name: Upload Artifacts (Backup)
-        if: steps.check_upload.outputs.upload_success == 'false'
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-${{ steps.package_step.outputs.safe_name }}
-          path: docker-image/
-          retention-days: 90
-          compression-level: 0
+### 📥 下载命令
+```bash
+# 下载所有分卷
+for i in $(seq -f "%03g" 0 $((${{ steps.package_step.outputs.part_count }}-1))); do \\
+  wget https://github.com/${{ github.repository }}/releases/download/docker-backup-${{ github.run_number }}/${{ steps.package_step.outputs.safe_name }}.tar.gz.part.$i; \\
+done
 
-      # 步骤 8: 显示最终结果和下载方式
-      - name: Show Final Information
-        run: |
-          echo "=================================================="
-          echo "✅ 任务完成！"
-          echo "=================================================="
-          echo "📦 镜像: ${{ inputs.image_name }}:${{ inputs.image_tag }}"
-          echo "📊 压缩后大小: ${{ steps.package_step.outputs.compressed_size_human }}"
-          echo "=================================================="
-          
-          if [ "${{ steps.check_upload.outputs.upload_success }}" == "true" ]; then
-            echo "✅ Release 上传成功！"
-            echo ""
-            echo "👇 访问 Release 页面："
-            echo "https://github.com/${{ github.repository }}/releases/tag/docker-backup-${{ github.run_number }}"
-          else
-            echo "⚠️ Release 上传失败，文件已保存为 Artifact"
-            echo ""
-            echo "👇 下载 Artifact 的方法："
-            echo "----------------------------------------------"
-            echo "方法1：通过 GitHub Web 界面"
-            echo "1. 进入 Actions 页面"
-            echo "2. 找到这个工作流运行记录"
-            echo "3. 在 \"Artifacts\" 部分下载 docker-image-${{ steps.package_step.outputs.safe_name }}"
-            echo ""
-            echo "方法2：使用 GitHub CLI"
-            echo "gh run download ${{ github.run_id }} -n docker-image-${{ steps.package_step.outputs.safe_name }}"
-            echo "----------------------------------------------"
-          fi
-          echo "=================================================="
+# 合并文件
+cat ${{ steps.package_step.outputs.safe_name }}.tar.gz.part.* > ${{ steps.package_step.outputs.safe_name }}.tar.gz
+
+# 加载镜像
+docker load -i ${{ steps.package_step.outputs.safe_name }}.tar.gz
