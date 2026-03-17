@@ -1,0 +1,114 @@
+name: Pull and Compress Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: 'Docker Image Name (e.g., quay.io/ascend/vllm-ascend)'
+        required: true
+        default: 'quay.io/ascend/vllm-ascend'
+      image_tag:
+        description: 'Image Tag (e.g., v0.17.0rc1-a3-openeuler)'
+        required: true
+        default: 'v0.17.0rc1-a3-openeuler'
+      platform:
+        description: 'Platform (e.g., linux/arm64, linux/amd64)'
+        required: true
+        default: 'linux/arm64'
+
+jobs:
+  pull-and-compress:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      actions: write  # 只需要上传 artifacts 的权限
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 步骤 1: 拉取镜像
+      - name: Pull Docker Image
+        run: |
+          FULL_IMAGE_NAME="${{ inputs.image_name }}:${{ inputs.image_tag }}"
+          echo "Pulling $FULL_IMAGE_NAME for ${{ inputs.platform }}..."
+          docker pull --platform ${{ inputs.platform }} "$FULL_IMAGE_NAME"
+
+      # 步骤 2: 清理空间
+      - name: Cleanup System
+        run: |
+          echo "🧹 Cleaning up system to free up space..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          docker builder prune -af
+          echo "✅ Cleanup done. Current space:"
+          df -h .
+
+      # 步骤 3: 保存并压缩
+      - name: Save and Compress Image
+        run: |
+          FULL_IMAGE_NAME="${{ inputs.image_name }}:${{ inputs.image_tag }}"
+          
+          # 生成安全的文件名
+          SAFE_NAME=$(echo "$FULL_IMAGE_NAME" | sed 's/[\/:]/_/g')
+          TAR_FILE="${SAFE_NAME}.tar"
+          GZ_FILE="${SAFE_NAME}.tar.gz"
+          
+          # 保存镜像
+          echo "Saving image to $TAR_FILE ..."
+          docker save -o "$TAR_FILE" "$FULL_IMAGE_NAME"
+          
+          # 获取原始大小
+          ORIGINAL_SIZE=$(du -h "$TAR_FILE" | cut -f1)
+          echo "Original size: $ORIGINAL_SIZE"
+          
+          # 压缩
+          echo "Compressing to $GZ_FILE ..."
+          gzip -c "$TAR_FILE" > "$GZ_FILE"
+          
+          # 获取压缩后大小
+          COMPRESSED_SIZE_HUMAN=$(du -h "$GZ_FILE" | cut -f1)
+          echo "Compressed size: $COMPRESSED_SIZE_HUMAN"
+          
+          # 删除原始 tar 文件
+          rm -f "$TAR_FILE"
+          
+          # 列出最终文件
+          echo "最终文件："
+          ls -lh "$GZ_FILE"
+          
+          # 记录文件名
+          echo "gz_file=$GZ_FILE" >> $GITHUB_ENV
+          echo "safe_name=$SAFE_NAME" >> $GITHUB_ENV
+
+      # 步骤 4: 上传为 Artifact（网页可直接下载）
+      - name: Upload as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.safe_name }}
+          path: ${{ env.gz_file }}
+          retention-days: 90  # 保留90天
+          compression-level: 0  # 不压缩，因为文件已经是压缩的
+
+      # 步骤 5: 显示下载信息
+      - name: Show Download Information
+        run: |
+          echo "=================================================="
+          echo "✅ 任务完成！"
+          echo "=================================================="
+          echo "📦 镜像: ${{ inputs.image_name }}:${{ inputs.image_tag }}"
+          echo "📊 压缩后大小: $(du -h ${{ env.gz_file }} | cut -f1)"
+          echo "=================================================="
+          echo ""
+          echo "👇 下载方法："
+          echo "----------------------------------------------"
+          echo "1. 进入 Actions 页面"
+          echo "2. 找到这个工作流运行记录"
+          echo "3. 在 \"Artifacts\" 部分下载 ${{ env.safe_name }}.zip"
+          echo "4. 解压后得到 .tar.gz 文件"
+          echo "----------------------------------------------"
+          echo ""
+          echo "或者直接点击页面上的 Artifact 链接下载"
+          echo "=================================================="
