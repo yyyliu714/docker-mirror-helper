@@ -1,10 +1,10 @@
-name: Package TAU2-bench for Ascend NPU (Source + Data Included)
+name: Package TAU2-bench for Ascend NPU (With Datasets)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-npu-package:
+  build-npu-package-with-data:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout TAU2-bench
@@ -13,99 +13,167 @@ jobs:
           repository: sierra-research/tau2-bench
           path: tau2-bench-src
           ref: main
-          # 获取完整历史以确保所有数据文件都在
-          fetch-depth: 0 
-
-      - name: Inspect Data Files (Debug)
-        run: |
-          echo ">>> Checking for data files in the repository..."
-          find tau2-bench-src -type f \( -name "*.json" -o -name "*.jsonl" -o -name "*.csv" \) | head -n 20
-          echo ">>> Estimating size of data directories..."
-          du -sh tau2-bench-src/*/ 2>/dev/null || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'  # ⚠️ 请确保与服务器版本一致
+          python-version: '3.10'
           architecture: 'arm64'
 
-      - name: Download Missing Dependencies
+      - name: Install Build Dependencies
+        run: |
+          pip install datasets huggingface_hub
+
+      - name: Download Missing Python Wheels
         run: |
           mkdir -p wheels
           MISSING_PACKAGES="accelerate datasets pyarrow colorama ruamel.yaml jsonlines evaluate rouge_score bert_score protobuf"
-          echo "Downloading wheels for: $MISSING_PACKAGES"
+          echo "Downloading wheels..."
           pip download $MISSING_PACKAGES \
                --platform manylinux_2_17_aarch64 \
                --python-version 3.10 \
                --only-binary=:all: \
                -d wheels
 
-      - name: Create Offline Package
+      # 🔥 新增步骤：预下载数据集到缓存目录
+      - name: Download Datasets for Offline Use
         run: |
-          mkdir -p npu-offline-package
+          echo ">>> Pre-downloading datasets to HF_HOME cache..."
           
-          # 1. Copy Source (which likely includes data)
-          cp -r tau2-bench-src npu-offline-package/tau2-bench
+          # 设置 Hugging Face 缓存目录
+          export HF_HOME="./hf_cache"
+          mkdir -p $HF_HOME
+          
+          # 使用 Python 脚本下载特定数据集
+          # 注意：这里列出了 tau2-bench 常用的数据集，如有其他任务请追加
+          python3 << 'EOF'
+from datasets import load_dataset
+
+# 定义需要下载的数据集列表
+# 请根据您实际要跑的任务调整这里
+dataset_names = [
+    "sierra-research/tau2-airline",
+    "sierra-research/tau2-retail"
+    # 如果有其他任务，例如 "sierra-research/tau2-xxx", 请添加在这里
+]
+
+print("Starting dataset download...")
+for name in dataset_names:
+    try:
+        print(f"Downloading {name}...")
+        # load_dataset 会自动将数据保存到 HF_HOME 环境变量指定的目录
+        ds = load_dataset(name, trust_remote_code=True)
+        print(f"✅ Successfully downloaded {name}")
+    except Exception as e:
+        print(f"❌ Failed to download {name}: {e}")
+        # 如果某个数据集不存在或私有，可能会失败，请检查权限或名称
+EOF
+
+          echo ">>> Dataset cache size:"
+          du -sh $HF_HOME
+          ls -R $HF_HOME | head -n 20
+
+      - name: Create Final Offline Package
+        run: |
+          mkdir -p npu-offline-full
+          
+          # 1. Copy Source
+          cp -r tau2-bench-src npu-offline-full/tau2-bench
           
           # 2. Copy Wheels
-          cp -r wheels npu-offline-package/
+          cp -r wheels npu-offline-full/
           
-          # 3. Create Install Script
-          cat << 'EOF' > npu-offline-package/install.sh
+          # 3. Copy Dataset Cache (关键！)
+          cp -r hf_cache npu-offline-full/hf_cache
+          
+          # 4. Create Install Script (更新版)
+          cat << 'EOF' > npu-offline-full/install.sh
 #!/bin/bash
 set -e
+
 echo "=========================================="
-echo "  Installing TAU2-bench (NPU Offline)"
+echo "  Installing TAU2-bench (Offline + Data)"
 echo "=========================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHEELS_DIR="$SCRIPT_DIR/wheels"
+DATA_CACHE_DIR="$SCRIPT_DIR/hf_cache"
 PROJECT_DIR="$SCRIPT_DIR/tau2-bench"
 
-# Check NPU Env
-if ! python3 -c "import torch_npu" 2>/dev/null; then
-    echo "⚠️ Warning: torch_npu not found. Please source ascend env first."
-fi
-
-echo "[1] Installing dependencies..."
+# 1. 安装 Python 依赖
+echo "[1] Installing Python dependencies..."
 pip install --no-index --find-links="$WHEELS_DIR" \
     accelerate datasets pyarrow colorama ruamel.yaml jsonlines \
     evaluate rouge_score bert_score protobuf
 
+# 2. 安装项目本身
 echo "[2] Installing tau2-bench..."
 cd "$PROJECT_DIR"
 pip install -e . --no-deps
 
-echo "✅ Installation complete!"
-echo "Note: Data files should be inside the tau2-bench directory."
-EOF
-          chmod +x npu-offline-package/install.sh
+# 3. 配置环境变量指向本地缓存 (关键！)
+# 我们将把设置写入一个简单的 env 文件，供运行脚本 source
+echo "export HF_HOME=\"$DATA_CACHE_DIR\"" > "$SCRIPT_DIR/set_data_env.sh"
+echo "export HF_DATASETS_OFFLINE=1" >> "$SCRIPT_DIR/set_data_env.sh"
+echo "export HF_HUB_OFFLINE=1" >> "$SCRIPT_DIR/set_data_env.sh"
 
-          # 4. Create Run Script
-          cat << 'EOF' > npu-offline-package/run_test.sh
+echo ""
+echo "=========================================="
+echo "  ✅ Installation Complete!"
+echo "=========================================="
+echo "重要提示："
+echo "运行测试前，必须先 source 数据环境变量："
+echo "  source set_data_env.sh"
+echo "这将强制程序从本地 '$DATA_CACHE_DIR' 读取数据，禁止联网。"
+EOF
+          chmod +x npu-offline-full/install.sh
+
+          # 5. Create Run Script (更新版)
+          cat << 'EOF' > npu-offline-full/run_test.sh
 #!/bin/bash
-export ASCEND_RT_VISIBLE_DEVICES=0
-MODEL_PATH="/path/to/your/model" # <--- CHANGE THIS
-TASK="airline" # Or "retail", check the repo for valid task names
+# ==========================================
+# TAU2-bench NPU Test Runner (Offline Data)
+# ==========================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 1. 加载 NPU 环境 (请根据实际情况修改路径)
+# source /usr/local/Ascend/ascend-toolkit/set_env.sh 
+
+# 2. 加载数据离线环境 (必须！)
+source "$SCRIPT_DIR/set_data_env.sh"
+
+# 3. 配置
+export ASCEND_RT_VISIBLE_DEVICES=0
+MODEL_PATH="/path/to/your/local/model"  # <--- 修改这里
+TASK="airline"  # 确保这个任务的数据集已经在 GitHub Actions 中下载了
+OUTPUT_DIR="./results"
+
 cd "$SCRIPT_DIR/tau2-bench"
 
-echo "🚀 Running TAU2-bench..."
+echo "🚀 Starting TAU2-bench (Offline Mode)..."
+echo "   Data Source: $HF_HOME (Offline)"
+echo "   Model: $MODEL_PATH"
+echo "   Task : $TASK"
+
 python -m tau2_bench.run \
     --model_path "$MODEL_PATH" \
     --device "npu" \
+    --output_dir "$OUTPUT_DIR" \
     --task "$TASK"
+
+echo "✅ Done."
 EOF
-          chmod +x npu-offline-package/run_test.sh
+          chmod +x npu-offline-full/run_test.sh
 
       - name: Compress and Upload
         run: |
-          tar -czvf tau2-bench-npu-complete.tar.gz npu-offline-package
+          # 数据包可能比较大，压缩需要一点时间
+          tar -czvf tau2-bench-npu-full.tar.gz npu-offline-full
         
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tau2-bench-npu-complete
-          path: tau2-bench-npu-complete.tar.gz
+          name: tau2-bench-npu-full
+          path: tau2-bench-npu-full.tar.gz
           retention-days: 7
