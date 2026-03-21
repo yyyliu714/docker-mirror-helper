@@ -1,4 +1,4 @@
-name: Package TAU2-bench for Ascend NPU (Source + Data Included)
+name: Package TAU2-bench for Ascend NPU
 
 on:
   workflow_dispatch:
@@ -15,12 +15,10 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      # 🔍 调试步骤：查看数据文件位置
       - name: Inspect Data Files
         run: |
-          echo ">>> Checking for data files in the repository..."
-          find tau2-bench-src -type f \( -name "*.json" -o -name "*.jsonl" -o -name "*.csv" \) | head -n 20
-          echo ">>> Estimating size of data directories..."
+          echo ">>> Checking for data files..."
+          find tau2-bench-src -type f \( -name "*.json" -o -name "*.jsonl" \) | head -n 20
           du -sh tau2-bench-src/*/ 2>/dev/null || true
 
       - name: Set up Python
@@ -29,81 +27,49 @@ jobs:
           python-version: '3.10'
           architecture: 'arm64'
 
-      - name: Download Missing Dependencies
+      - name: Download Dependencies
         run: |
           mkdir -p wheels
-          MISSING_PACKAGES="accelerate datasets pyarrow colorama ruamel.yaml jsonlines evaluate rouge_score bert_score protobuf"
-          echo "Downloading wheels for: $MISSING_PACKAGES"
-          pip download $MISSING_PACKAGES \
-               --platform manylinux_2_17_aarch64 \
-               --python-version 3.10 \
-               --only-binary=:all: \
-               -d wheels
+          PACKAGES="accelerate datasets pyarrow colorama ruamel.yaml jsonlines evaluate rouge_score bert_score protobuf"
+          echo "Downloading: $PACKAGES"
+          pip download $PACKAGES \
+            --platform manylinux_2_17_aarch64 \
+            --python-version 3.10 \
+            --only-binary=:all: \
+            -d wheels
 
       - name: Create Offline Package
         run: |
           mkdir -p npu-offline-package
           
-          # 1. Copy Source
+          # Copy source and wheels
           cp -r tau2-bench-src npu-offline-package/tau2-bench
-          
-          # 2. Copy Wheels
           cp -r wheels npu-offline-package/
           
-          # 3. Create Install Script
-          cat << 'EOF' > npu-offline-package/install.sh
-#!/bin/bash
-set -e
-echo "=========================================="
-echo "  Installing TAU2-bench (NPU Offline)"
-echo "=========================================="
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WHEELS_DIR="$SCRIPT_DIR/wheels"
-PROJECT_DIR="$SCRIPT_DIR/tau2-bench"
-
-if ! python3 -c "import torch_npu" 2>/dev/null; then
-    echo "⚠️ Warning: torch_npu not found. Please source ascend env first."
-fi
-
-echo "[1] Installing dependencies..."
-pip install --no-index --find-links="$WHEELS_DIR" \
-    accelerate datasets pyarrow colorama ruamel.yaml jsonlines \
-    evaluate rouge_score bert_score protobuf
-
-echo "[2] Installing tau2-bench..."
-cd "$PROJECT_DIR"
-pip install -e . --no-deps
-
-echo "✅ Installation complete!"
-EOF
+          # Create install.sh using echo to avoid heredoc indentation issues
+          echo '#!/bin/bash' > npu-offline-package/install.sh
+          echo 'set -e' >> npu-offline-package/install.sh
+          echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> npu-offline-package/install.sh
+          echo 'echo "Installing dependencies..."' >> npu-offline-package/install.sh
+          echo 'pip install --no-index --find-links="$SCRIPT_DIR/wheels" accelerate datasets pyarrow colorama ruamel.yaml jsonlines evaluate rouge_score bert_score protobuf' >> npu-offline-package/install.sh
+          echo 'cd "$SCRIPT_DIR/tau2-bench"' >> npu-offline-package/install.sh
+          echo 'pip install -e . --no-deps' >> npu-offline-package/install.sh
+          echo 'echo "Installation complete!"' >> npu-offline-package/install.sh
           chmod +x npu-offline-package/install.sh
-
-          # 4. Create Run Script
-          cat << 'EOF' > npu-offline-package/run_test.sh
-#!/bin/bash
-export ASCEND_RT_VISIBLE_DEVICES=0
-MODEL_PATH="/path/to/your/model"
-TASK="airline"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/tau2-bench"
-
-echo "🚀 Running TAU2-bench..."
-python -m tau2_bench.run \
-    --model_path "$MODEL_PATH" \
-    --device "npu" \
-    --task "$TASK"
-EOF
+          
+          # Create run_test.sh
+          echo '#!/bin/bash' > npu-offline-package/run_test.sh
+          echo 'export ASCEND_RT_VISIBLE_DEVICES=0' >> npu-offline-package/run_test.sh
+          echo 'MODEL_PATH="/path/to/your/model"' >> npu-offline-package/run_test.sh
+          echo 'TASK="airline"' >> npu-offline-package/run_test.sh
+          echo 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> npu-offline-package/run_test.sh
+          echo 'cd "$SCRIPT_DIR/tau2-bench"' >> npu-offline-package/run_test.sh
+          echo 'python -m tau2_bench.run --model_path "$MODEL_PATH" --device "npu" --task "$TASK"' >> npu-offline-package/run_test.sh
           chmod +x npu-offline-package/run_test.sh
 
-      - name: Compress and Upload
-        run: |
-          tar -czvf tau2-bench-npu-complete.tar.gz npu-offline-package
-        
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tau2-bench-npu-complete
-          path: tau2-bench-npu-complete.tar.gz
+          name: tau2-bench-npu-offline
+          path: npu-offline-package/
           retention-days: 7
