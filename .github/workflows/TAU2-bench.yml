@@ -1,0 +1,111 @@
+name: Package TAU2-bench for Ascend NPU (Source + Data Included)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-npu-package:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout TAU2-bench
+        uses: actions/checkout@v4
+        with:
+          repository: sierra-research/tau2-bench
+          path: tau2-bench-src
+          ref: main
+          # 获取完整历史以确保所有数据文件都在
+          fetch-depth: 0 
+
+      - name: Inspect Data Files (Debug)
+        run: |
+          echo ">>> Checking for data files in the repository..."
+          find tau2-bench-src -type f \( -name "*.json" -o -name "*.jsonl" -o -name "*.csv" \) | head -n 20
+          echo ">>> Estimating size of data directories..."
+          du -sh tau2-bench-src/*/ 2>/dev/null || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'  # ⚠️ 请确保与服务器版本一致
+          architecture: 'arm64'
+
+      - name: Download Missing Dependencies
+        run: |
+          mkdir -p wheels
+          MISSING_PACKAGES="accelerate datasets pyarrow colorama ruamel.yaml jsonlines evaluate rouge_score bert_score protobuf"
+          echo "Downloading wheels for: $MISSING_PACKAGES"
+          pip download $MISSING_PACKAGES \
+               --platform manylinux_2_17_aarch64 \
+               --python-version 3.10 \
+               --only-binary=:all: \
+               -d wheels
+
+      - name: Create Offline Package
+        run: |
+          mkdir -p npu-offline-package
+          
+          # 1. Copy Source (which likely includes data)
+          cp -r tau2-bench-src npu-offline-package/tau2-bench
+          
+          # 2. Copy Wheels
+          cp -r wheels npu-offline-package/
+          
+          # 3. Create Install Script
+          cat << 'EOF' > npu-offline-package/install.sh
+#!/bin/bash
+set -e
+echo "=========================================="
+echo "  Installing TAU2-bench (NPU Offline)"
+echo "=========================================="
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WHEELS_DIR="$SCRIPT_DIR/wheels"
+PROJECT_DIR="$SCRIPT_DIR/tau2-bench"
+
+# Check NPU Env
+if ! python3 -c "import torch_npu" 2>/dev/null; then
+    echo "⚠️ Warning: torch_npu not found. Please source ascend env first."
+fi
+
+echo "[1] Installing dependencies..."
+pip install --no-index --find-links="$WHEELS_DIR" \
+    accelerate datasets pyarrow colorama ruamel.yaml jsonlines \
+    evaluate rouge_score bert_score protobuf
+
+echo "[2] Installing tau2-bench..."
+cd "$PROJECT_DIR"
+pip install -e . --no-deps
+
+echo "✅ Installation complete!"
+echo "Note: Data files should be inside the tau2-bench directory."
+EOF
+          chmod +x npu-offline-package/install.sh
+
+          # 4. Create Run Script
+          cat << 'EOF' > npu-offline-package/run_test.sh
+#!/bin/bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+MODEL_PATH="/path/to/your/model" # <--- CHANGE THIS
+TASK="airline" # Or "retail", check the repo for valid task names
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/tau2-bench"
+
+echo "🚀 Running TAU2-bench..."
+python -m tau2_bench.run \
+    --model_path "$MODEL_PATH" \
+    --device "npu" \
+    --task "$TASK"
+EOF
+          chmod +x npu-offline-package/run_test.sh
+
+      - name: Compress and Upload
+        run: |
+          tar -czvf tau2-bench-npu-complete.tar.gz npu-offline-package
+        
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tau2-bench-npu-complete
+          path: tau2-bench-npu-complete.tar.gz
+          retention-days: 7
