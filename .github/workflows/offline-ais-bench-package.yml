@@ -1,70 +1,68 @@
-name: Build AISBench Offline Package (Python 3.11)
+name: Build AISBench Offline Package
 
 on:
   workflow_dispatch:
+    description: '手动触发构建离线包'
 
 jobs:
   build-offline:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: 🛠️ Checkout Code
-      uses: actions/checkout@v4
-      # 关键点：显式指定检出路径，确保代码在 $GITHUB_WORKSPACE 根目录
-      with:
-        path: '.' 
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: 🐍 Set Up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: 🔍 Debug: Check Files
-      # 调试步骤：列出文件，确认 pyproject.toml 是否存在
-      run: |
-        echo "Current Directory: $(pwd)"
-        ls -la
-        if [ ! -f "pyproject.toml" ]; then
-          echo "ERROR: pyproject.toml not found in root!"
-          # 如果你的项目文件在子目录，请在这里修改 cd 命令
-          # find . -name "pyproject.toml" 
-        fi
+      - name: Upgrade pip
+        run: |
+          python -m pip install --upgrade pip
 
-    - name: 📦 Prepare Environment
-      run: |
-        python -m pip install --upgrade pip
-        mkdir -p offline_package/wheels
+      - name: Create Directory
+        run: |
+          mkdir -p offline_package/wheels
 
-    - name: 📥 Download Core Package
-      # 确保在包含 pyproject.toml 的目录下运行
-      run: |
-        # 使用绝对路径或确认当前就在正确目录
-        pip download -d offline_package/wheels/ --no-deps --use-pep517 .
+      - name: Download Core Package
+        run: |
+          # 尝试下载当前目录的包，如果失败则跳过（针对非标准结构）
+          if [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+            pip download -d offline_package/wheels/ --no-deps --use-pep517 .
+          else
+            echo "No pyproject.toml or setup.py found in root, skipping core download."
+          fi
 
-    - name: 📥 Download API Dependencies
-      run: |
-        # 假设 requirements 文件夹也在根目录下
-        if [ -f "requirements/api.txt" ]; then
-          pip download -d offline_package/wheels/ -r requirements/api.txt
-        else
-          echo "Warning: requirements/api.txt not found"
-        fi
+      - name: Download API Dependencies
+        run: |
+          if [ -f "requirements/api.txt" ]; then
+            pip download -d offline_package/wheels/ -r requirements/api.txt
+          else
+            echo "requirements/api.txt not found"
+          fi
 
-    - name: 📥 Download Extra Dependencies
-      run: |
-        if [ -f "requirements/extra.txt" ]; then
-          pip download -d offline_package/wheels/ -r requirements/extra.txt
-        else
-          echo "Warning: requirements/extra.txt not found"
-        fi
+      - name: Download Extra Dependencies
+        run: |
+          if [ -f "requirements/extra.txt" ]; then
+            pip download -d offline_package/wheels/ -r requirements/extra.txt
+          else
+            echo "requirements/extra.txt not found"
+          fi
 
-    - name: 🗜️ Create Archive
-      run: |
-        zip -r ais_bench-offline-python311.zip offline_package/
+      - name: Copy Source Code
+        run: |
+          mkdir -p offline_package/ais_bench_src
+          cp -r . offline_package/ais_bench_src/
+          rm -rf offline_package/ais_bench_src/.git
 
-    - name: 📤 Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ais_bench-offline-py311
-        path: ais_bench-offline-python311.zip
-        retention-days: 7
+      - name: Create ZIP Archive
+        run: |
+          zip -r ais_bench-offline-py311.zip offline_package/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais_bench-offline-py311
+          path: ais_bench-offline-py311.zip
+          retention-days: 7
