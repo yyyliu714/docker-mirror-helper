@@ -12,6 +12,12 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Debug: List Root Files
+        run: |
+          echo "=== 检查当前目录文件 ==="
+          ls -la
+          echo "========================"
+
       - name: Set Up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -28,36 +34,52 @@ jobs:
 
       - name: Download Core Package
         run: |
-          if [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
-            pip download -d build_env/wheels/ --no-deps --use-pep517 .
-          else
-            echo "No pyproject.toml found, skipping core."
-          fi
+          # 无论有没有配置文件，都尝试下载，这样能看到更具体的错误
+          # 如果确实不是标准包，pip 会报错，我们正好需要看到这个报错
+          echo "尝试下载当前目录包..."
+          pip download -d build_env/wheels/ --no-deps --use-pep517 . || echo "核心包下载失败（可能不是标准包），继续尝试其他依赖..."
 
       - name: Download API Dependencies
         run: |
           if [ -f "requirements/api.txt" ]; then
+            echo "发现 api.txt，开始下载..."
             pip download -d build_env/wheels/ -r requirements/api.txt
+          else
+            echo "警告: 未找到 requirements/api.txt"
           fi
 
       - name: Download Extra Dependencies
         run: |
           if [ -f "requirements/extra.txt" ]; then
+            echo "发现 extra.txt，开始下载..."
             pip download -d build_env/wheels/ -r requirements/extra.txt
+          else
+            echo "警告: 未找到 requirements/extra.txt"
           fi
 
-      # 2. 创建最终打包目录，并移动 wheels
+      - name: Debug: Check Downloaded Wheels
+        run: |
+          echo "=== 检查已下载的文件 ==="
+          ls -la build_env/wheels/
+          echo "========================"
+
+      # 2. 创建最终打包目录，并移动 wheels (增加空目录检查)
       - name: Prepare Final Package Directory
         run: |
           mkdir -p offline_package/wheels
-          mv build_env/wheels/* offline_package/wheels/
+          # 只有当源目录有文件时才移动，防止报错
+          if [ -n "$(ls -A build_env/wheels/)" ]; then
+            mv build_env/wheels/* offline_package/wheels/
+          else
+            echo "错误: wheels 目录为空！请检查上面的下载步骤是否有误。"
+            exit 1
+          fi
 
-      # 3. 复制源码（此时离线包里还没有 wheels 文件夹，所以不会冲突）
+      # 3. 复制源码
       - name: Copy Source Code
         run: |
           mkdir -p offline_package/ais_bench_src
           cp -r ./* offline_package/ais_bench_src/
-          # 排除 .git 和 刚刚创建的 build_env 目录
           rm -rf offline_package/ais_bench_src/.git
           rm -rf offline_package/ais_bench_src/offline_package
           rm -rf offline_package/ais_bench_src/build_env
