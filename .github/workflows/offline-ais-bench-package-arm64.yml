@@ -1,0 +1,116 @@
+name: Build AISBench Offline Package (ARM64)
+
+on:
+  workflow_dispatch:
+    description: '手动触发构建离线包 (ARM64)'
+
+jobs:
+  build-offline:
+    runs-on: ubuntu-22.04  # GitHub Runner 是 x86_64，但可以交叉下载 arm64 包
+
+    steps:
+      - name: Clone AISBench Repository
+        run: |
+          git clone --depth 1 --branch master https://github.com/AISBench/benchmark.git benchmark
+          cd benchmark
+          ls -la
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Create Workspace
+        run: |
+          mkdir -p ~/yangliu_ais_bench/offline_package/wheels
+          mkdir -p ~/yangliu_ais_bench/offline_package/source_code
+
+      - name: Copy Source Code
+        run: |
+          rsync -av --exclude='.git' ./benchmark/ ~/yangliu_ais_bench/offline_package/source_code/
+
+      - name: Download ARM64 Dependencies
+        run: |
+          cd ~/yangliu_ais_bench/offline_package/source_code/
+          
+          # 指定下载 ARM64 架构的包
+          PLATFORM="manylinux2014_aarch64"
+          
+          echo "=== 下载 ARM64 架构的依赖包 ==="
+          
+          # 查找所有 requirements 文件并下载对应架构的包
+          find . -type f -name "requirements*.txt" | while read req_file; do
+            echo "正在下载 $req_file 中的 ARM64 包..."
+            pip download -d ~/yangliu_ais_bench/offline_package/wheels \
+              -r "$req_file" \
+              --platform $PLATFORM \
+              --python-version 311 \
+              --only-binary=:all: \
+              --no-deps || true
+          done
+          
+          # 下载核心包（源码，跨平台）
+          pip download -d ~/yangliu_ais_bench/offline_package/wheels . --no-deps || true
+          
+          echo "=== 下载完成 ==="
+          ls -lh ~/yangliu_ais_bench/offline_package/wheels/ | head -20
+
+      - name: Create Offline Install Script
+        run: |
+          cat > ~/yangliu_ais_bench/offline_package/install_offline.sh << 'EOF'
+#!/bin/bash
+set -e
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+echo "========================================="
+echo "开始离线安装 AISBench (ARM64)"
+echo "========================================="
+
+cd "${SCRIPT_DIR}/source_code/"
+
+PIP_OPTS="--no-index --find-links=${SCRIPT_DIR}/wheels"
+
+# 安装 runtime 依赖
+if [ -f "requirements/runtime.txt" ]; then
+  echo "安装 runtime 依赖..."
+  pip install ${PIP_OPTS} -r requirements/runtime.txt
+fi
+
+# 安装其他依赖
+if [ -f "requirements/api.txt" ]; then
+  echo "安装 api 依赖..."
+  pip install ${PIP_OPTS} -r requirements/api.txt || true
+fi
+
+if [ -f "requirements/extra.txt" ]; then
+  echo "安装 extra 依赖..."
+  pip install ${PIP_OPTS} -r requirements/extra.txt || true
+fi
+
+# 安装核心包
+echo "安装 AISBench 核心包..."
+pip install ${PIP_OPTS} -e .
+
+echo "========================================="
+echo "✅ AISBench 安装完成！"
+echo "运行 'ais_bench -h' 验证安装"
+echo "========================================="
+EOF
+          chmod +x ~/yangliu_ais_bench/offline_package/install_offline.sh
+
+      - name: Create Final Archive
+        run: |
+          cd ~/yangliu_ais_bench
+          tar -czf ${GITHUB_WORKSPACE}/ais_bench-offline-arm64.tar.gz offline_package/
+          echo "ARM64 离线包大小:"
+          ls -lh ${GITHUB_WORKSPACE}/ais_bench-offline-arm64.tar.gz
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais_bench-offline-arm64
+          path: ais_bench-offline-arm64.tar.gz
+          retention-days: 7
