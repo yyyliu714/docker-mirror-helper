@@ -109,6 +109,9 @@ jobs:
           echo '## 安装步骤' >> ~/yangliu_ais_bench/offline_package/README.md
           echo '' >> ~/yangliu_ais_bench/offline_package/README.md
           echo '1. 解压此文件到目标服务器' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '   ```bash' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '   tar -xzf ais_bench-offline-py311.tar.gz' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '   ```' >> ~/yangliu_ais_bench/offline_package/README.md
           echo '2. 进入 offline_package 目录' >> ~/yangliu_ais_bench/offline_package/README.md
           echo '3. 运行安装脚本：' >> ~/yangliu_ais_bench/offline_package/README.md
           echo '   ```bash' >> ~/yangliu_ais_bench/offline_package/README.md
@@ -120,18 +123,18 @@ jobs:
           echo 'ais_bench -h' >> ~/yangliu_ais_bench/offline_package/README.md
           echo '```' >> ~/yangliu_ais_bench/offline_package/README.md
 
-      # 7. 打包
+      # 7. 打包为 tar.gz（压缩率更高）
       - name: Create Final Archive
         run: |
           cd ~/yangliu_ais_bench
-          zip -r ${GITHUB_WORKSPACE}/ais_bench-offline-py311.zip offline_package/
+          tar -czf ${GITHUB_WORKSPACE}/ais_bench-offline-py311.tar.gz offline_package/
           echo "离线包大小:"
-          ls -lh ${GITHUB_WORKSPACE}/ais_bench-offline-py311.zip
+          ls -lh ${GITHUB_WORKSPACE}/ais_bench-offline-py311.tar.gz
 
       # 8. 上传产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ais_bench-offline-py311
-          path: ais_bench-offline-py311.zip
+          path: ais_bench-offline-py311.tar.gz
           retention-days: 7
