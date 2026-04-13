@@ -12,82 +12,86 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Debug: List Root Files
-        run: |
-          echo "=== 检查当前目录文件 ==="
-          ls -la
-          echo "========================"
-
       - name: Set Up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Upgrade pip
-        run: |
-          python -m pip install --upgrade pip
+        run: python -m pip install --upgrade pip
 
-      # 1. 先创建下载依赖的目录
-      - name: Create Wheel Directory
-        run: |
-          mkdir -p build_env/wheels
-
-      - name: Download Core Package
-        run: |
-          # 无论有没有配置文件，都尝试下载，这样能看到更具体的错误
-          # 如果确实不是标准包，pip 会报错，我们正好需要看到这个报错
-          echo "尝试下载当前目录包..."
-          pip download -d build_env/wheels/ --no-deps --use-pep517 . || echo "核心包下载失败（可能不是标准包），继续尝试其他依赖..."
-
-      - name: Download API Dependencies
-        run: |
-          if [ -f "requirements/api.txt" ]; then
-            echo "发现 api.txt，开始下载..."
-            pip download -d build_env/wheels/ -r requirements/api.txt
-          else
-            echo "警告: 未找到 requirements/api.txt"
-          fi
-
-      - name: Download Extra Dependencies
-        run: |
-          if [ -f "requirements/extra.txt" ]; then
-            echo "发现 extra.txt，开始下载..."
-            pip download -d build_env/wheels/ -r requirements/extra.txt
-          else
-            echo "警告: 未找到 requirements/extra.txt"
-          fi
-
-      - name: Debug: Check Downloaded Wheels
-        run: |
-          echo "=== 检查已下载的文件 ==="
-          ls -la build_env/wheels/
-          echo "========================"
-
-      # 2. 创建最终打包目录，并移动 wheels (增加空目录检查)
-      - name: Prepare Final Package Directory
+      # 1. 创建离线包的目录结构
+      - name: Create Offline Package Structure
         run: |
           mkdir -p offline_package/wheels
-          # 只有当源目录有文件时才移动，防止报错
-          if [ -n "$(ls -A build_env/wheels/)" ]; then
-            mv build_env/wheels/* offline_package/wheels/
-          else
-            echo "错误: wheels 目录为空！请检查上面的下载步骤是否有误。"
-            exit 1
-          fi
+          mkdir -p offline_package/source_code
 
-      # 3. 复制源码
+      # 2. 下载项目源码（保留.git以支持可编辑安装）
       - name: Copy Source Code
         run: |
-          mkdir -p offline_package/ais_bench_src
-          cp -r ./* offline_package/ais_bench_src/
-          rm -rf offline_package/ais_bench_src/.git
-          rm -rf offline_package/ais_bench_src/offline_package
-          rm -rf offline_package/ais_bench_src/build_env
+          # 复制所有源码到离线包中，保留 .git 目录因为安装命令需要
+          cp -r ./* offline_package/source_code/
+          cp -r ./.git offline_package/source_code/ 2>/dev/null || true
 
-      - name: Create ZIP Archive
+      # 3. 下载核心包（相当于 'pip download .'）
+      - name: Download Core Package
+        run: |
+          # 使用 --use-pep517 匹配安装命令
+          pip download -d offline_package/wheels --no-deps --use-pep517 .
+          echo "核心包下载完成"
+
+      # 4. 下载并追踪所有依赖（包括传递依赖）
+      - name: Download All Dependencies
+        run: |
+          # 创建一个临时 requirements 文件，合并所有依赖
+          # 使用 --no-deps 仅下载直接依赖的 .whl 文件，速度更快且不易出错
+          echo "正在下载 api.txt 依赖..."
+          pip download -d offline_package/wheels -r requirements/api.txt --only-binary :all: || true
+          
+          echo "正在下载 extra.txt 依赖..."
+          pip download -d offline_package/wheels -r requirements/extra.txt --only-binary :all: || true
+
+      # 5. 创建离线安装脚本
+      - name: Create Offline Install Script
+        run: |
+          cat > offline_package/install_offline.sh << 'EOF'
+#!/bin/bash
+# AISBench 离线安装脚本
+# 使用方法: bash install_offline.sh
+
+set -e  # 遇到错误立即退出
+
+echo "========================================="
+echo "开始离线安装 AISBench"
+echo "========================================="
+
+# 获取脚本所在目录
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# 1. 从本地 wheels 目录安装所有依赖
+echo "步骤 1/2: 安装项目依赖..."
+pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r "${SCRIPT_DIR}/source_code/requirements/api.txt"
+pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r "${SCRIPT_DIR}/source_code/requirements/extra.txt"
+
+# 2. 以可编辑模式安装核心项目（离线）
+echo "步骤 2/2: 安装 AISBench 核心包..."
+pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -e "${SCRIPT_DIR}/source_code/"
+
+echo "========================================="
+echo "✅ AISBench 安装完成！"
+echo "可以运行 'ais_bench' 或 'python -m ais_bench' 验证安装。"
+echo "========================================="
+EOF
+          # 为脚本添加执行权限
+          chmod +x offline_package/install_offline.sh
+
+      # 6. 打包整个离线包
+      - name: Create Final Archive
         run: |
           zip -r ais_bench-offline-py311.zip offline_package/
+          echo "离线包创建成功"
 
+      # 7. 上传为工作流产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
