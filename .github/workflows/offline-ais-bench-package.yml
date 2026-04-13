@@ -1,117 +1,26 @@
-name: Build AISBench Offline Package
+name: Debug AISBench Structure
 
 on:
   workflow_dispatch:
-    description: '手动触发构建离线包'
+    description: '调试项目结构'
 
 jobs:
-  build-offline:
+  debug:
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set Up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Upgrade pip
+      - name: List All Files
         run: |
-          python -m pip install --upgrade pip
-
-      # 1. 创建独立工作空间
-      - name: Create Workspace
-        run: |
-          mkdir -p ~/yangliu_ais_bench/offline_package/wheels
-          mkdir -p ~/yangliu_ais_bench/offline_package/source_code
-
-      # 2. 复制所有源码
-      - name: Copy Source Code
-        run: |
-          # 复制所有文件（排除临时目录）
-          rsync -av --exclude='offline_package' --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' ./ ~/yangliu_ais_bench/offline_package/source_code/
-
-      # 3. 智能查找并下载所有依赖
-      - name: Smart Download Dependencies
-        run: |
-          cd ~/yangliu_ais_bench/offline_package/source_code/
-          
-          echo "=== 查找所有依赖定义文件 ==="
-          
-          # 方法1: 查找所有 requirements 文件
-          find . -type f \( -name "requirements*.txt" -o -name "*requirements.txt" \) | while read req_file; do
-            echo "找到依赖文件: $req_file"
-            echo "正在下载 $req_file 中的包..."
-            pip download -d ~/yangliu_ais_bench/offline_package/wheels -r "$req_file" || echo "部分包下载失败，继续..."
-          done
-          
-          # 方法2: 如果存在 setup.py，尝试提取依赖
-          if [ -f "setup.py" ]; then
-            echo "发现 setup.py，尝试安装核心包以获取依赖..."
-            # 使用 --dry-run 模拟安装，不实际安装
-            pip download -d ~/yangliu_ais_bench/offline_package/wheels . --no-deps || true
-          fi
-          
-          # 方法3: 如果存在 pyproject.toml，尝试提取依赖
-          if [ -f "pyproject.toml" ]; then
-            echo "发现 pyproject.toml，尝试获取依赖..."
-            pip download -d ~/yangliu_ais_bench/offline_package/wheels . --no-deps || true
-          fi
-          
-          echo "=== 依赖下载完成 ==="
-          ls -lh ~/yangliu_ais_bench/offline_package/wheels/ | head -20
-          echo "总包数: $(ls ~/yangliu_ais_bench/offline_package/wheels/ | wc -l)"
-
-      # 4. 创建离线安装脚本
-      - name: Create Offline Install Script
-        run: |
-          cat > ~/yangliu_ais_bench/offline_package/install_offline.sh << 'EOF'
-#!/bin/bash
-set -e
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-
-echo "========================================="
-echo "开始离线安装 AISBench"
-echo "========================================="
-
-# 安装依赖
-echo "步骤 1/2: 安装项目依赖..."
-cd "${SCRIPT_DIR}/source_code/"
-
-# 查找所有 requirements 文件并安装
-find . -type f \( -name "requirements*.txt" -o -name "*requirements.txt" \) | while read req_file; do
-  echo "安装依赖: $req_file"
-  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r "$req_file" || echo "警告: 安装 $req_file 时出现问题"
-done
-
-# 安装核心包
-echo "步骤 2/2: 安装 AISBench 核心包..."
-if [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
-  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -e . || pip install --no-index --find-links="${SCRIPT_DIR}/wheels" .
-else
-  echo "警告: 未找到可安装的核心包"
-fi
-
-echo "========================================="
-echo "✅ AISBench 安装完成！"
-echo "========================================="
-EOF
-          chmod +x ~/yangliu_ais_bench/offline_package/install_offline.sh
-
-      # 5. 打包
-      - name: Create Final Archive
-        run: |
-          cd ~/yangliu_ais_bench
-          zip -r ${GITHUB_WORKSPACE}/ais_bench-offline-py311.zip offline_package/
-          echo "离线包大小:"
-          ls -lh ${GITHUB_WORKSPACE}/ais_bench-offline-py311.zip
-
-      # 6. 上传产物
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ais_bench-offline-py311
-          path: ais_bench-offline-py311.zip
-          retention-days: 7
+          echo "=== 项目根目录 ==="
+          ls -la
+          echo ""
+          echo "=== 查找所有 requirements 相关文件 ==="
+          find . -name "*requirements*" -o -name "*.txt" | grep -v ".git" | head -20
+          echo ""
+          echo "=== 查找 setup.py 或 pyproject.toml ==="
+          find . -name "setup.py" -o -name "pyproject.toml"
+          echo ""
+          echo "=== 目录结构树（限制深度） ==="
+          find . -maxdepth 3 -type d | grep -v ".git" | head -30
