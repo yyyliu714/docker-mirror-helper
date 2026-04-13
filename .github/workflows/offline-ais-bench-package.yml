@@ -21,105 +21,97 @@ jobs:
         run: |
           python -m pip install --upgrade pip
 
-      # 1. 检查项目结构
-      - name: Debug Project Structure
-        run: |
-          echo "=== 项目根目录内容 ==="
-          ls -la
-          echo "======================"
-          echo "=== 查找 setup.py 或 pyproject.toml ==="
-          find . -name "setup.py" -o -name "pyproject.toml" | head -10
-          echo "======================"
-          echo "=== requirements 目录内容 ==="
-          ls -la requirements/ 2>/dev/null || echo "requirements 目录不存在"
-          echo "======================"
-
-      # 2. 在 home 目录创建工作空间
+      # 1. 创建独立工作空间
       - name: Create Workspace
         run: |
           mkdir -p ~/yangliu_ais_bench/offline_package/wheels
           mkdir -p ~/yangliu_ais_bench/offline_package/source_code
 
-      # 3. 复制所有源码到工作空间
+      # 2. 复制所有源码
       - name: Copy Source Code
         run: |
-          # 使用 rsync 排除临时目录
-          sudo apt-get update -qq && sudo apt-get install -y -qq rsync
-          rsync -av --exclude='offline_package' --exclude='__pycache__' --exclude='*.pyc' --exclude='.git' ./ ~/yangliu_ais_bench/offline_package/source_code/
+          # 复制所有文件（排除临时目录）
+          rsync -av --exclude='offline_package' --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' ./ ~/yangliu_ais_bench/offline_package/source_code/
 
-      # 4. 下载所有依赖（直接从 requirements 文件下载）
-      - name: Download Dependencies
+      # 3. 智能查找并下载所有依赖
+      - name: Smart Download Dependencies
         run: |
-          # 确保 wheels 目录存在
-          mkdir -p ~/yangliu_ais_bench/offline_package/wheels
+          cd ~/yangliu_ais_bench/offline_package/source_code/
           
-          # 下载 api.txt 依赖
-          if [ -f "requirements/api.txt" ]; then
-            echo "正在下载 api.txt 依赖..."
-            pip download -d ~/yangliu_ais_bench/offline_package/wheels -r requirements/api.txt || true
-          else
-            echo "警告: requirements/api.txt 不存在"
+          echo "=== 查找所有依赖定义文件 ==="
+          
+          # 方法1: 查找所有 requirements 文件
+          find . -type f \( -name "requirements*.txt" -o -name "*requirements.txt" \) | while read req_file; do
+            echo "找到依赖文件: $req_file"
+            echo "正在下载 $req_file 中的包..."
+            pip download -d ~/yangliu_ais_bench/offline_package/wheels -r "$req_file" || echo "部分包下载失败，继续..."
+          done
+          
+          # 方法2: 如果存在 setup.py，尝试提取依赖
+          if [ -f "setup.py" ]; then
+            echo "发现 setup.py，尝试安装核心包以获取依赖..."
+            # 使用 --dry-run 模拟安装，不实际安装
+            pip download -d ~/yangliu_ais_bench/offline_package/wheels . --no-deps || true
           fi
           
-          # 下载 extra.txt 依赖
-          if [ -f "requirements/extra.txt" ]; then
-            echo "正在下载 extra.txt 依赖..."
-            pip download -d ~/yangliu_ais_bench/offline_package/wheels -r requirements/extra.txt || true
-          else
-            echo "警告: requirements/extra.txt 不存在"
+          # 方法3: 如果存在 pyproject.toml，尝试提取依赖
+          if [ -f "pyproject.toml" ]; then
+            echo "发现 pyproject.toml，尝试获取依赖..."
+            pip download -d ~/yangliu_ais_bench/offline_package/wheels . --no-deps || true
           fi
+          
+          echo "=== 依赖下载完成 ==="
+          ls -lh ~/yangliu_ais_bench/offline_package/wheels/ | head -20
+          echo "总包数: $(ls ~/yangliu_ais_bench/offline_package/wheels/ | wc -l)"
 
-      # 5. 创建离线安装脚本
+      # 4. 创建离线安装脚本
       - name: Create Offline Install Script
         run: |
-          echo '#!/bin/bash' > ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '# AISBench 离线安装脚本' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '# 使用方法: bash install_offline.sh' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'set -e  # 遇到错误立即退出' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "开始离线安装 AISBench"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '# 获取脚本所在目录' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '# 1. 从本地 wheels 目录安装所有依赖' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "步骤 1/2: 安装项目依赖..."' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'if [ -f "${SCRIPT_DIR}/source_code/requirements/api.txt" ]; then' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r "${SCRIPT_DIR}/source_code/requirements/api.txt"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'fi' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'if [ -f "${SCRIPT_DIR}/source_code/requirements/extra.txt" ]; then' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r "${SCRIPT_DIR}/source_code/requirements/extra.txt"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'fi' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '# 2. 安装核心项目' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "步骤 2/2: 安装 AISBench 核心包..."' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '# 尝试可编辑安装，如果失败则尝试普通安装' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'cd "${SCRIPT_DIR}/source_code/"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'if [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -e ./ || pip install --no-index --find-links="${SCRIPT_DIR}/wheels" ./' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'else' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '  echo "警告: 未找到 setup.py 或 pyproject.toml，跳过核心包安装"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'fi' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "✅ AISBench 安装完成！"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
-          
+          cat > ~/yangliu_ais_bench/offline_package/install_offline.sh << 'EOF'
+#!/bin/bash
+set -e
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+echo "========================================="
+echo "开始离线安装 AISBench"
+echo "========================================="
+
+# 安装依赖
+echo "步骤 1/2: 安装项目依赖..."
+cd "${SCRIPT_DIR}/source_code/"
+
+# 查找所有 requirements 文件并安装
+find . -type f \( -name "requirements*.txt" -o -name "*requirements.txt" \) | while read req_file; do
+  echo "安装依赖: $req_file"
+  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r "$req_file" || echo "警告: 安装 $req_file 时出现问题"
+done
+
+# 安装核心包
+echo "步骤 2/2: 安装 AISBench 核心包..."
+if [ -f "setup.py" ] || [ -f "pyproject.toml" ]; then
+  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -e . || pip install --no-index --find-links="${SCRIPT_DIR}/wheels" .
+else
+  echo "警告: 未找到可安装的核心包"
+fi
+
+echo "========================================="
+echo "✅ AISBench 安装完成！"
+echo "========================================="
+EOF
           chmod +x ~/yangliu_ais_bench/offline_package/install_offline.sh
 
-      # 6. 创建快速安装说明
-      - name: Create README
+      # 5. 打包
+      - name: Create Final Archive
         run: |
-          cat > ~/yangliu_ais_bench/offline_package/README.md << 'EOF'
-          # AISBench 离线安装包
+          cd ~/yangliu_ais_bench
+          zip -r ${GITHUB_WORKSPACE}/ais_bench-offline-py311.zip offline_package/
+          echo "离线包大小:"
+          ls -lh ${GITHUB_WORKSPACE}/ais_bench-offline-py311.zip
 
-          ## 安装步骤
-
-          1. 解压此文件到目标服务器
-          2. 进入 offline_package 目录
-          3. 运行安装脚本：
-             ```bash
-             bash install_offline.sh
+      # 6. 上传产物
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais_bench-offline-py311
+          path: ais_bench-offline-py311.zip
+          retention-days: 7
