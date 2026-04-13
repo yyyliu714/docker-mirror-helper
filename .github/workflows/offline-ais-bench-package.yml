@@ -1,26 +1,121 @@
-name: Debug AISBench Structure
+name: Build AISBench Offline Package
 
 on:
   workflow_dispatch:
-    description: '调试项目结构'
+    description: '手动触发构建离线包'
 
 jobs:
-  debug:
+  build-offline:
     runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
 
-      - name: List All Files
+    steps:
+      # 1. 正确克隆 AISBench 仓库（指定 master 分支）
+      - name: Clone AISBench Repository
         run: |
-          echo "=== 项目根目录 ==="
+          echo "正在克隆 AISBench/benchmark 仓库 (master 分支)..."
+          git clone --depth 1 --branch master https://github.com/AISBench/benchmark.git benchmark
+          
+          cd benchmark
+          echo "=== 克隆完成，查看内容 ==="
           ls -la
           echo ""
-          echo "=== 查找所有 requirements 相关文件 ==="
-          find . -name "*requirements*" -o -name "*.txt" | grep -v ".git" | head -20
+          echo "=== 查找 requirements 目录 ==="
+          ls -la requirements/ 2>/dev/null || echo "requirements 目录不存在"
           echo ""
-          echo "=== 查找 setup.py 或 pyproject.toml ==="
-          find . -name "setup.py" -o -name "pyproject.toml"
-          echo ""
-          echo "=== 目录结构树（限制深度） ==="
-          find . -maxdepth 3 -type d | grep -v ".git" | head -30
+          echo "=== 查找 setup.py ==="
+          ls -la setup.py 2>/dev/null || echo "setup.py 不存在"
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      # 2. 创建独立工作空间
+      - name: Create Workspace
+        run: |
+          mkdir -p ~/yangliu_ais_bench/offline_package/wheels
+          mkdir -p ~/yangliu_ais_bench/offline_package/source_code
+
+      # 3. 复制源码到工作空间
+      - name: Copy Source Code
+        run: |
+          rsync -av --exclude='.git' ./benchmark/ ~/yangliu_ais_bench/offline_package/source_code/
+
+      # 4. 下载所有依赖（根据官方文档）
+      - name: Download Dependencies
+        run: |
+          cd ~/yangliu_ais_bench/offline_package/source_code/
+          
+          echo "=== 查找所有 requirements 文件 ==="
+          find . -type f \( -name "requirements*.txt" \) | while read req_file; do
+            echo "找到依赖文件: $req_file"
+            echo "正在下载 $req_file 中的包..."
+            pip download -d ~/yangliu_ais_bench/offline_package/wheels -r "$req_file" || echo "部分包下载失败，继续..."
+          done
+          
+          # 额外下载核心包（用于离线安装）
+          echo "正在下载核心包..."
+          pip download -d ~/yangliu_ais_bench/offline_package/wheels . --no-deps || true
+          
+          echo "=== 下载完成，wheels 目录内容 ==="
+          ls -lh ~/yangliu_ais_bench/offline_package/wheels/ | head -30
+          echo "总包数: $(ls ~/yangliu_ais_bench/offline_package/wheels/ | wc -l)"
+
+      # 5. 创建离线安装脚本（根据官方文档）
+      - name: Create Offline Install Script
+        run: |
+          cat > ~/yangliu_ais_bench/offline_package/install_offline.sh << 'EOF'
+#!/bin/bash
+set -e
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+echo "========================================="
+echo "开始离线安装 AISBench"
+echo "========================================="
+
+cd "${SCRIPT_DIR}/source_code/"
+
+# 安装核心依赖（根据官方文档）
+echo "步骤 1/3: 安装核心依赖..."
+pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r requirements.txt
+
+# 安装可选依赖（如果需要服务化模型支持）
+echo "步骤 2/3: 安装服务化模型依赖..."
+if [ -f "requirements/api.txt" ]; then
+  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r requirements/api.txt || echo "警告: api.txt 部分依赖安装失败"
+fi
+if [ -f "requirements/extra.txt" ]; then
+  pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -r requirements/extra.txt || echo "警告: extra.txt 部分依赖安装失败"
+fi
+
+# 安装核心包
+echo "步骤 3/3: 安装 AISBench 核心包..."
+pip install --no-index --find-links="${SCRIPT_DIR}/wheels" -e .
+
+echo "========================================="
+echo "✅ AISBench 安装完成！"
+echo "运行 'ais_bench -h' 验证安装"
+echo "========================================="
+EOF
+          chmod +x ~/yangliu_ais_bench/offline_package/install_offline.sh
+
+      # 6. 创建快速安装说明
+      - name: Create README
+        run: |
+          cat > ~/yangliu_ais_bench/offline_package/README.md << 'EOF'
+# AISBench 离线安装包
+
+## 环境要求
+- Python 3.10, 3.11 或 3.12
+- 推荐使用 Conda 管理环境
+
+## 安装步骤
+
+1. 解压此文件到目标服务器
+2. 进入 offline_package 目录
+3. 运行安装脚本：
+   ```bash
+   bash install_offline.sh
