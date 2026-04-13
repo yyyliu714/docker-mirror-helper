@@ -21,46 +21,46 @@ jobs:
         run: |
           python -m pip install --upgrade pip
 
-      - name: Create Directory Structure
+      # 1. 先创建下载依赖的目录
+      - name: Create Wheel Directory
         run: |
-          mkdir -p offline_package/wheels
+          mkdir -p build_env/wheels
 
       - name: Download Core Package
         run: |
           if [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
-            pip download -d offline_package/wheels/ --no-deps --use-pep517 .
+            pip download -d build_env/wheels/ --no-deps --use-pep517 .
           else
-            echo "No pyproject.toml or setup.py found in root, skipping core download."
+            echo "No pyproject.toml found, skipping core."
           fi
 
       - name: Download API Dependencies
         run: |
           if [ -f "requirements/api.txt" ]; then
-            pip download -d offline_package/wheels/ -r requirements/api.txt
-          else
-            echo "requirements/api.txt not found"
+            pip download -d build_env/wheels/ -r requirements/api.txt
           fi
 
       - name: Download Extra Dependencies
         run: |
           if [ -f "requirements/extra.txt" ]; then
-            pip download -d offline_package/wheels/ -r requirements/extra.txt
-          else
-            echo "requirements/extra.txt not found"
+            pip download -d build_env/wheels/ -r requirements/extra.txt
           fi
 
-      - name: Copy Source Code (Fixed)
+      # 2. 创建最终打包目录，并移动 wheels
+      - name: Prepare Final Package Directory
         run: |
-          # 1. 创建目标目录
+          mkdir -p offline_package/wheels
+          mv build_env/wheels/* offline_package/wheels/
+
+      # 3. 复制源码（此时离线包里还没有 wheels 文件夹，所以不会冲突）
+      - name: Copy Source Code
+        run: |
           mkdir -p offline_package/ais_bench_src
-          
-          # 2. 复制当前目录下的所有文件（包括隐藏文件）到目标目录
-          # 使用 . 和 * 避免 "copy into itself" 错误
-          shopt -s dotglob nullglob
           cp -r ./* offline_package/ais_bench_src/
-          
-          # 3. 删除目标目录中的 .git 文件夹以减小体积
+          # 排除 .git 和 刚刚创建的 build_env 目录
           rm -rf offline_package/ais_bench_src/.git
+          rm -rf offline_package/ais_bench_src/offline_package
+          rm -rf offline_package/ais_bench_src/build_env
 
       - name: Create ZIP Archive
         run: |
@@ -70,5 +70,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ais_bench-offline-py311
-          path: ais_bench-offline-py311.zip
+        path: ais_bench-offline-py311.zip
           retention-days: 7
