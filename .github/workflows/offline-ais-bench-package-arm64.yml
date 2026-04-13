@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-offline:
-    runs-on: ubuntu-22.04  # GitHub Runner 是 x86_64，但可以交叉下载 arm64 包
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Clone AISBench Repository
@@ -36,12 +36,10 @@ jobs:
         run: |
           cd ~/yangliu_ais_bench/offline_package/source_code/
           
-          # 指定下载 ARM64 架构的包
           PLATFORM="manylinux2014_aarch64"
           
           echo "=== 下载 ARM64 架构的依赖包 ==="
           
-          # 查找所有 requirements 文件并下载对应架构的包
           find . -type f -name "requirements*.txt" | while read req_file; do
             echo "正在下载 $req_file 中的 ARM64 包..."
             pip download -d ~/yangliu_ais_bench/offline_package/wheels \
@@ -52,7 +50,6 @@ jobs:
               --no-deps || true
           done
           
-          # 下载核心包（源码，跨平台）
           pip download -d ~/yangliu_ais_bench/offline_package/wheels . --no-deps || true
           
           echo "=== 下载完成 ==="
@@ -60,46 +57,58 @@ jobs:
 
       - name: Create Offline Install Script
         run: |
-          cat > ~/yangliu_ais_bench/offline_package/install_offline.sh << 'EOF'
-#!/bin/bash
-set -e
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-
-echo "========================================="
-echo "开始离线安装 AISBench (ARM64)"
-echo "========================================="
-
-cd "${SCRIPT_DIR}/source_code/"
-
-PIP_OPTS="--no-index --find-links=${SCRIPT_DIR}/wheels"
-
-# 安装 runtime 依赖
-if [ -f "requirements/runtime.txt" ]; then
-  echo "安装 runtime 依赖..."
-  pip install ${PIP_OPTS} -r requirements/runtime.txt
-fi
-
-# 安装其他依赖
-if [ -f "requirements/api.txt" ]; then
-  echo "安装 api 依赖..."
-  pip install ${PIP_OPTS} -r requirements/api.txt || true
-fi
-
-if [ -f "requirements/extra.txt" ]; then
-  echo "安装 extra 依赖..."
-  pip install ${PIP_OPTS} -r requirements/extra.txt || true
-fi
-
-# 安装核心包
-echo "安装 AISBench 核心包..."
-pip install ${PIP_OPTS} -e .
-
-echo "========================================="
-echo "✅ AISBench 安装完成！"
-echo "运行 'ais_bench -h' 验证安装"
-echo "========================================="
-EOF
+          echo '#!/bin/bash' > ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'set -e' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "开始离线安装 AISBench (ARM64)"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'cd "${SCRIPT_DIR}/source_code/"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'PIP_OPTS="--no-index --find-links=${SCRIPT_DIR}/wheels"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'if [ -f "requirements/runtime.txt" ]; then' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '  echo "安装 runtime 依赖..."' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '  pip install ${PIP_OPTS} -r requirements/runtime.txt' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'fi' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'if [ -f "requirements/api.txt" ]; then' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '  echo "安装 api 依赖..."' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '  pip install ${PIP_OPTS} -r requirements/api.txt || true' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'fi' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'if [ -f "requirements/extra.txt" ]; then' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '  echo "安装 extra 依赖..."' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '  pip install ${PIP_OPTS} -r requirements/extra.txt || true' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'fi' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "安装 AISBench 核心包..."' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'pip install ${PIP_OPTS} -e .' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo '' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "✅ AISBench 安装完成！"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "运行 '\''ais_bench -h'\'' 验证安装"' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          echo 'echo "========================================="' >> ~/yangliu_ais_bench/offline_package/install_offline.sh
+          
           chmod +x ~/yangliu_ais_bench/offline_package/install_offline.sh
+
+      - name: Create README
+        run: |
+          echo '# AISBench 离线安装包 (ARM64)' > ~/yangliu_ais_bench/offline_package/README.md
+          echo '' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '## 环境要求' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '- **架构**: ARM64 (aarch64)' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '- Python 3.10, 3.11 或 3.12' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '## 安装步骤' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '```bash' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo 'tar -xzf ais_bench-offline-arm64.tar.gz' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo 'cd offline_package' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo 'bash install_offline.sh' >> ~/yangliu_ais_bench/offline_package/README.md
+          echo '```' >> ~/yangliu_ais_bench/offline_package/README.md
 
       - name: Create Final Archive
         run: |
