@@ -8,9 +8,9 @@ on:
         required: true
         default: 'quay.io/ascend/vllm-ascend'
       image_tag:
-        description: 'Image Tag (e.g., v0.17.0rc1-a3-openeuler)'
+        description: 'Image Tag (e.g., v0.18.0rc1)'
         required: true
-        default: 'v0.17.0rc1-a3-openeuler'
+        default: 'v0.18.0rc1'
       platform:
         description: 'Platform (e.g., linux/arm64, linux/amd64)'
         required: true
