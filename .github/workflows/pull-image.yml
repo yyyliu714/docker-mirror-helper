@@ -10,7 +10,7 @@ on:
       image_tag:
         description: 'Image Tag (e.g., v0.18.0rc1)'
         required: true
-        default: 'v0.18.0rc1'
+        default: 'v0.18.0-a3'
       platform:
         description: 'Platform (e.g., linux/arm64, linux/amd64)'
         required: true
